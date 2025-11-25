@@ -49,7 +49,7 @@ class PresentationVerificationServiceTest {
     @BeforeEach
     void setUp() {
         properties = new VerifierProperties(null, "{}", null, "wallet-verifier",
-                tempDir.resolve("verifier-keys.json"));
+                tempDir.resolve("verifier-keys.json"), null);
         verifierKeyService = new VerifierKeyService(properties, new ObjectMapper());
         verificationService = new PresentationVerificationService(trustListService, properties, new ObjectMapper(), verifierKeyService);
         when(trustListService.verify(any(SignedJWT.class), anyString())).thenReturn(true);

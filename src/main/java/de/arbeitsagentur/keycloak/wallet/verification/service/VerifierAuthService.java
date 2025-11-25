@@ -22,15 +22,18 @@ import java.util.Map;
 public class VerifierAuthService {
     private final VerifierKeyService verifierKeyService;
     private final VerifierCryptoService verifierCryptoService;
+    private final RequestObjectService requestObjectService;
     private final VerifierProperties properties;
     private final ObjectMapper objectMapper;
 
     public VerifierAuthService(VerifierKeyService verifierKeyService,
                                VerifierCryptoService verifierCryptoService,
+                               RequestObjectService requestObjectService,
                                VerifierProperties properties,
                                ObjectMapper objectMapper) {
         this.verifierKeyService = verifierKeyService;
         this.verifierCryptoService = verifierCryptoService;
+        this.requestObjectService = requestObjectService;
         this.properties = properties;
         this.objectMapper = objectMapper;
     }
@@ -45,8 +48,8 @@ public class VerifierAuthService {
                                                          String attestationCert,
                                                          String attestationIssuer,
                                                          String responseTypeOverride,
+                                                         String requestObjectMode,
                                                          UriComponentsBuilder baseUri) {
-        UriComponentsBuilder builder;
         String effectiveWalletAuth = walletAuthOverride != null && !walletAuthOverride.isBlank()
                 ? walletAuthOverride
                 : properties.walletAuthEndpoint();
@@ -54,20 +57,15 @@ public class VerifierAuthService {
         String effectiveResponseType = responseTypeOverride != null && !responseTypeOverride.isBlank()
                 ? responseTypeOverride
                 : "vp_token";
-        if (effectiveWalletAuth != null && !effectiveWalletAuth.isBlank()) {
-            builder = UriComponentsBuilder.fromUriString(effectiveWalletAuth)
-                    .queryParam("response_type", qp(effectiveResponseType));
-        } else {
-            builder = baseUri.cloneBuilder().path("/oid4vp/auth");
+        boolean usedRequestUri = false;
+        if ("verifier_attestation".equalsIgnoreCase(authType)) {
+            requestObjectMode = "request_uri";
         }
-        boolean includeClientCertParam = true;
-        UriComponentsBuilder populated = builder
-                .queryParam("client_id", qp(effectiveClientId))
-                .queryParam("nonce", qp(nonce))
-                .queryParam("response_mode", qp("direct_post"))
-                .queryParam("response_uri", qp(callback.toString()))
-                .queryParam("state", qp(state))
-                .queryParam("dcql_query", qp(dcqlQuery));
+        UriComponentsBuilder builder = effectiveWalletAuth != null && !effectiveWalletAuth.isBlank()
+                ? UriComponentsBuilder.fromUriString(effectiveWalletAuth)
+                : baseUri.cloneBuilder().path("/oid4vp/auth");
+        UriComponentsBuilder populated = builder.queryParam("client_id", qp(effectiveClientId));
+
         if ("x509_hash".equalsIgnoreCase(authType)) {
             RSAKey popKey = verifierCryptoService.parsePrivateKeyWithCertificate(walletClientCert);
             List<com.nimbusds.jose.util.Base64> x5c = verifierCryptoService.extractCertChain(walletClientCert);
@@ -75,25 +73,47 @@ public class VerifierAuthService {
                 throw new IllegalStateException("client_cert must include a certificate chain for x509_hash");
             }
             String requestObject = buildRequestObject(callback.toString(), state, nonce, effectiveClientId, effectiveResponseType, dcqlQuery, clientMetadata, null, x5c, popKey);
-            populated.queryParam("request", qp(requestObject));
-            includeClientCertParam = false;
-        }
-        if ("verifier_attestation".equalsIgnoreCase(authType)) {
+            populateWithRequestObject(populated, requestObject, requestObjectMode, baseUri);
+        } else if ("verifier_attestation".equalsIgnoreCase(authType)) {
             RSAKey attestationKey = verifierKeyService.loadOrCreateSigningKey();
             if (attestationCert != null && !attestationCert.isBlank()) {
                 attestationKey = verifierCryptoService.parsePrivateKeyWithCertificate(attestationCert);
             }
             attestationValue = createVerifierAttestation(effectiveClientId, attestationIssuer, attestationKey, callback.toString());
             String requestObject = buildRequestObject(callback.toString(), state, nonce, effectiveClientId, effectiveResponseType, dcqlQuery, clientMetadata, attestationValue, null, attestationKey);
-            populated.queryParam("request", qp(requestObject));
+            usedRequestUri = populateWithRequestObject(populated, requestObject, requestObjectMode, baseUri);
+        } else {
+            populated
+                    .queryParam("response_type", qp(effectiveResponseType))
+                    .queryParam("nonce", qp(nonce))
+                    .queryParam("response_mode", qp("direct_post"))
+                    .queryParam("response_uri", qp(callback.toString()))
+                    .queryParam("state", qp(state))
+                    .queryParam("dcql_query", qp(dcqlQuery));
+            if (clientMetadata != null && !clientMetadata.isBlank()) {
+                populated.queryParam("client_metadata", qp(clientMetadata));
+            }
+            if (walletClientCert != null && !walletClientCert.isBlank()) {
+                populated.queryParam("client_cert", qp(walletClientCert));
+            }
         }
-        if (clientMetadata != null && !clientMetadata.isBlank()) {
-            populated.queryParam("client_metadata", qp(clientMetadata));
+        return new WalletAuthRequest(populated.build(true).toUri(), authType != null && authType.equalsIgnoreCase("verifier_attestation") ? attestationValue : null, usedRequestUri);
+    }
+
+    private boolean populateWithRequestObject(UriComponentsBuilder builder, String requestObject, String requestObjectMode, UriComponentsBuilder baseUri) {
+        RequestObjectMode mode = RequestObjectMode.fromString(requestObjectMode);
+        if (mode == RequestObjectMode.REQUEST_URI) {
+            String id = requestObjectService.store(requestObject);
+            URI requestUri = baseUri.cloneBuilder()
+                    .path("/verifier/request-object/{id}")
+                    .buildAndExpand(id)
+                    .toUri();
+            builder.queryParam("request_uri", qp(requestUri.toString()));
+            return true;
+        } else {
+            builder.queryParam("request", qp(requestObject));
+            return false;
         }
-        if (includeClientCertParam && walletClientCert != null && !walletClientCert.isBlank()) {
-            populated.queryParam("client_cert", qp(walletClientCert));
-        }
-        return new WalletAuthRequest(populated.build(true).toUri(), authType != null && authType.equalsIgnoreCase("verifier_attestation") ? attestationValue : null);
     }
 
     private String buildRequestObject(String responseUri, String state, String nonce,
@@ -173,6 +193,18 @@ public class VerifierAuthService {
         return value == null ? null : UriUtils.encodeQueryParam(value, StandardCharsets.UTF_8);
     }
 
-    public record WalletAuthRequest(URI uri, String attestationJwt) {
+    public record WalletAuthRequest(URI uri, String attestationJwt, boolean usedRequestUri) {
+    }
+
+    public enum RequestObjectMode {
+        BY_VALUE,
+        REQUEST_URI;
+
+        static RequestObjectMode fromString(String value) {
+            if (value != null && value.equalsIgnoreCase("request_uri")) {
+                return REQUEST_URI;
+            }
+            return BY_VALUE;
+        }
     }
 }

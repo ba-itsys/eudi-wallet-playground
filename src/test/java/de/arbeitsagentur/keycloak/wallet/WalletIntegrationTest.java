@@ -747,9 +747,14 @@ class WalletIntegrationTest {
             SelfSignedMaterial cert = generateSelfSignedCert();
             String clientId = "x509_hash:" + cert.hash();
             String dcql = fetchDefaultDcqlQuery(client, context, base);
-            PresentationForm form = initiatePresentationFlow(client, context, base, dcql, "accept",
-                    List.of("given_name"), null, null, false,
+            URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
                     clientId, "x509_hash", cert.combinedPem(), null, null);
+            List<NameValuePair> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8);
+            List<String> paramNames = params.stream().map(NameValuePair::getName).toList();
+            assertThat(paramNames).contains("client_id").contains("request");
+            assertThat(paramNames).doesNotContain("dcql_query", "nonce", "response_mode", "response_uri", "state", "client_metadata", "request_uri");
+            PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
+                    List.of("given_name"), null, false, Map.of(), null);
             HttpPost callbackPost = new HttpPost(form.action());
             callbackPost.setEntity(new UrlEncodedFormEntity(toParams(form.fields()), StandardCharsets.UTF_8));
             try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
@@ -790,6 +795,48 @@ class WalletIntegrationTest {
                     .orElse(null);
             assertThat(clientId).isNotBlank();
             assertThat(clientId).startsWith("x509_hash:");
+            PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
+                    List.of("given_name"), null, false, Map.of(), null);
+            HttpPost callbackPost = new HttpPost(form.action());
+            callbackPost.setEntity(new UrlEncodedFormEntity(toParams(form.fields()), StandardCharsets.UTF_8));
+            try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
+                String body = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
+                assertThat(verifierResult.getCode())
+                        .withFailMessage("Verifier callback failed. Body:%n%s", body)
+                        .isEqualTo(200);
+                assertThat(body).contains("Verified credential");
+            }
+        }
+    }
+
+    @Test
+    void presentationWithX509HashRequestUri() throws Exception {
+        URI base = URI.create("http://localhost:" + serverPort);
+        BasicCookieStore cookieStore = new BasicCookieStore();
+        HttpClientContext context = HttpClientContext.create();
+        context.setCookieStore(cookieStore);
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setRedirectsEnabled(false)
+                .setCookieSpec(StandardCookieSpec.RELAXED)
+                .build();
+        try (CloseableHttpClient client = HttpClients.custom()
+                .setDefaultCookieStore(cookieStore)
+                .setDefaultRequestConfig(requestConfig)
+                .build()) {
+            authenticateThroughLogin(client, context, base);
+            try (CloseableHttpResponse issueResponse = client.execute(new HttpPost(base.resolve("/api/issue")), context)) {
+                assertThat(issueResponse.getCode()).isEqualTo(200);
+            }
+            SelfSignedMaterial cert = generateSelfSignedCert();
+            String clientId = "x509_hash:" + cert.hash();
+            String dcql = fetchDefaultDcqlQuery(client, context, base);
+            URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
+                    clientId, "x509_hash", cert.combinedPem(), null, null, "request_uri");
+            List<String> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8).stream()
+                    .map(NameValuePair::getName)
+                    .toList();
+            assertThat(params).contains("client_id").contains("request_uri");
+            assertThat(params).doesNotContain("request", "dcql_query", "nonce", "response_mode", "response_uri", "state", "client_metadata");
             PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
                     List.of("given_name"), null, false, Map.of(), null);
             HttpPost callbackPost = new HttpPost(form.action());
@@ -861,9 +908,55 @@ class WalletIntegrationTest {
             }
             SelfSignedMaterial attestation = generateSelfSignedCert();
             String dcql = fetchDefaultDcqlQuery(client, context, base);
-            PresentationForm form = initiatePresentationFlow(client, context, base, dcql, "accept",
-                    List.of("given_name"), null, null, false,
+            URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
                     "verifier.example", "verifier_attestation", null, attestation.combinedPem(), "demo-attestation-issuer");
+            List<NameValuePair> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8);
+            List<String> names = params.stream().map(NameValuePair::getName).toList();
+            assertThat(names).contains("client_id").contains("request_uri");
+            assertThat(names).doesNotContain("dcql_query", "nonce", "response_mode", "response_uri", "state", "client_metadata", "request");
+            PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
+                    List.of("given_name"), null, false, Map.of(), null);
+            HttpPost callbackPost = new HttpPost(form.action());
+            callbackPost.setEntity(new UrlEncodedFormEntity(toParams(form.fields()), StandardCharsets.UTF_8));
+            try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
+                String body = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
+                assertThat(verifierResult.getCode())
+                        .withFailMessage("Verifier callback failed. Body:%n%s", body)
+                        .isEqualTo(200);
+                assertThat(body).contains("Verified credential");
+            }
+        }
+    }
+
+    @Test
+    void presentationWithVerifierAttestationRequestUri() throws Exception {
+        URI base = URI.create("http://localhost:" + serverPort);
+        BasicCookieStore cookieStore = new BasicCookieStore();
+        HttpClientContext context = HttpClientContext.create();
+        context.setCookieStore(cookieStore);
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setRedirectsEnabled(false)
+                .setCookieSpec(StandardCookieSpec.RELAXED)
+                .build();
+        try (CloseableHttpClient client = HttpClients.custom()
+                .setDefaultCookieStore(cookieStore)
+                .setDefaultRequestConfig(requestConfig)
+                .build()) {
+            authenticateThroughLogin(client, context, base);
+            try (CloseableHttpResponse issueResponse = client.execute(new HttpPost(base.resolve("/api/issue")), context)) {
+                assertThat(issueResponse.getCode()).isEqualTo(200);
+            }
+            SelfSignedMaterial attestation = generateSelfSignedCert();
+            String dcql = fetchDefaultDcqlQuery(client, context, base);
+            URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
+                    "verifier.example", "verifier_attestation", null, attestation.combinedPem(), "demo-attestation-issuer", "request_uri");
+            List<String> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8).stream()
+                    .map(NameValuePair::getName)
+                    .toList();
+            assertThat(params).contains("client_id").contains("request_uri");
+            assertThat(params).doesNotContain("request", "dcql_query", "nonce", "response_mode", "response_uri", "state", "client_metadata");
+            PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
+                    List.of("given_name"), null, false, Map.of(), null);
             HttpPost callbackPost = new HttpPost(form.action());
             callbackPost.setEntity(new UrlEncodedFormEntity(toParams(form.fields()), StandardCharsets.UTF_8));
             try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
@@ -958,7 +1051,20 @@ class WalletIntegrationTest {
                                                       String walletClientId, String authType,
                                                       String walletClientCert, String attestationCert, String attestationIssuer) throws IOException {
         return initiatePresentationFlow(client, context, base, dcqlQuery, decision, expectedClaims, forbiddenClaims,
-                clientMetadata, expectEncrypted, walletClientId, authType, walletClientCert, attestationCert, attestationIssuer, Map.of(), null);
+                clientMetadata, expectEncrypted, walletClientId, authType, walletClientCert, attestationCert, attestationIssuer, Map.of(), null, null);
+    }
+
+    private PresentationForm initiatePresentationFlow(CloseableHttpClient client, HttpClientContext context, URI base,
+                                                      String dcqlQuery, String decision,
+                                                      List<String> expectedClaims, List<String> forbiddenClaims,
+                                                      String clientMetadata, boolean expectEncrypted,
+                                                      String walletClientId, String authType,
+                                                      String walletClientCert, String attestationCert, String attestationIssuer,
+                                                      Map<String, String> selectionOverrides, String expectedVct, String requestObjectMode)
+            throws IOException {
+        URI walletAuth = startPresentationRequest(client, context, base, dcqlQuery, expectedClaims, clientMetadata,
+                walletClientId, authType, walletClientCert, attestationCert, attestationIssuer, requestObjectMode);
+        return continuePresentationFlow(client, context, base, walletAuth, decision, expectedClaims, forbiddenClaims, expectEncrypted, selectionOverrides, expectedVct);
     }
 
     private PresentationForm initiatePresentationFlow(CloseableHttpClient client, HttpClientContext context, URI base,
@@ -969,15 +1075,22 @@ class WalletIntegrationTest {
                                                       String walletClientCert, String attestationCert, String attestationIssuer,
                                                       Map<String, String> selectionOverrides, String expectedVct)
             throws IOException {
-        URI walletAuth = startPresentationRequest(client, context, base, dcqlQuery, expectedClaims, clientMetadata,
-                walletClientId, authType, walletClientCert, attestationCert, attestationIssuer);
-        return continuePresentationFlow(client, context, base, walletAuth, decision, expectedClaims, forbiddenClaims, expectEncrypted, selectionOverrides, expectedVct);
+        return initiatePresentationFlow(client, context, base, dcqlQuery, decision, expectedClaims, forbiddenClaims,
+                clientMetadata, expectEncrypted, walletClientId, authType, walletClientCert, attestationCert, attestationIssuer, selectionOverrides, expectedVct, null);
     }
 
     private URI startPresentationRequest(CloseableHttpClient client, HttpClientContext context, URI base,
                                          String dcqlQuery, List<String> expectedClaims, String clientMetadata,
                                          String walletClientId, String authType, String walletClientCert,
                                          String attestationCert, String attestationIssuer) throws IOException {
+        return startPresentationRequest(client, context, base, dcqlQuery, expectedClaims, clientMetadata,
+                walletClientId, authType, walletClientCert, attestationCert, attestationIssuer, null);
+    }
+
+    private URI startPresentationRequest(CloseableHttpClient client, HttpClientContext context, URI base,
+                                         String dcqlQuery, List<String> expectedClaims, String clientMetadata,
+                                         String walletClientId, String authType, String walletClientCert,
+                                         String attestationCert, String attestationIssuer, String requestObjectMode) throws IOException {
         HttpPost verifierStart = new HttpPost(base.resolve("/verifier/start"));
         verifierStart.setConfig(RequestConfig.custom()
                 .setRedirectsEnabled(false)
@@ -1002,6 +1115,9 @@ class WalletIntegrationTest {
         }
         if (attestationIssuer != null && !attestationIssuer.isBlank()) {
             startParams.add(new BasicNameValuePair("attestationIssuer", attestationIssuer));
+        }
+        if (requestObjectMode != null && !requestObjectMode.isBlank()) {
+            startParams.add(new BasicNameValuePair("requestObjectMode", requestObjectMode));
         }
         verifierStart.setEntity(new UrlEncodedFormEntity(startParams, StandardCharsets.UTF_8));
         try (CloseableHttpResponse startResponse = client.execute(verifierStart, context)) {

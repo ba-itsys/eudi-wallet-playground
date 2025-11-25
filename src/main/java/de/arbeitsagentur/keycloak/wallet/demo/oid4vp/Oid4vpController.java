@@ -27,14 +27,17 @@ import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.ModelAndView;
 import jakarta.servlet.http.HttpSession;
 import jakarta.servlet.http.HttpServletRequest;
 
+import java.net.URI;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Base64;
@@ -57,6 +60,7 @@ public class Oid4vpController {
     private final ObjectMapper objectMapper;
     private final DebugLogService debugLogService;
     private final SessionService sessionService;
+    private final RestTemplate restTemplate;
     private static final String SESSION_REQUEST = "oid4vp_request";
     private static final String POST_LOGIN_REDIRECT = "postLoginRedirect";
 
@@ -65,36 +69,50 @@ public class Oid4vpController {
                             WalletProperties walletProperties,
                             ObjectMapper objectMapper,
                             DebugLogService debugLogService,
-                            SessionService sessionService) {
+                            SessionService sessionService,
+                            RestTemplate restTemplate) {
         this.presentationService = presentationService;
         this.walletKeyService = walletKeyService;
         this.walletProperties = walletProperties;
         this.objectMapper = objectMapper;
         this.debugLogService = debugLogService;
         this.sessionService = sessionService;
+        this.restTemplate = restTemplate;
     }
 
     @GetMapping("/oid4vp/auth")
     public ModelAndView handleAuth(@RequestParam(name = "response_uri", required = false) String responseUri,
                                    @RequestParam(name = "redirect_uri", required = false) String redirectUri,
-                                   @RequestParam("state") String state,
+                                   @RequestParam(name = "state", required = false) String state,
                                    @RequestParam(name = "dcql_query", required = false) String dcqlQuery,
                                    @RequestParam(name = "nonce", required = false) String nonce,
                                    @RequestParam(name = "client_id", required = false) String clientId,
                                    @RequestParam(name = "client_metadata", required = false) String clientMetadata,
                                    @RequestParam(name = "request", required = false) String requestObject,
+                                   @RequestParam(name = "request_uri", required = false) String requestUri,
                                    @RequestParam(name = "client_cert", required = false) String clientCert,
                                    HttpSession httpSession) {
         WalletSession walletSession = sessionService.getSession(httpSession);
         String targetResponseUri = responseUri != null && !responseUri.isBlank() ? responseUri : redirectUri;
         PendingRequest pending;
-        if (requestObject != null && !requestObject.isBlank()) {
+        String resolvedRequestObject = requestObject;
+        if ((resolvedRequestObject == null || resolvedRequestObject.isBlank()) && requestUri != null && !requestUri.isBlank()) {
             try {
-                pending = parseRequestObject(requestObject, state, targetResponseUri);
+                resolvedRequestObject = resolveRequestUri(requestUri);
+            } catch (IllegalStateException e) {
+                return errorView(e.getMessage());
+            }
+        }
+        if (resolvedRequestObject != null && !resolvedRequestObject.isBlank()) {
+            try {
+                pending = parseRequestObject(resolvedRequestObject, state, targetResponseUri);
             } catch (Exception e) {
                 return errorView("Invalid request object: " + e.getMessage());
             }
         } else {
+            if (state == null || state.isBlank()) {
+                return errorView("Missing state parameter");
+            }
             try {
                 validateClientBinding(clientId, clientMetadata, clientCert);
             } catch (IllegalStateException e) {
@@ -288,6 +306,29 @@ public class Oid4vpController {
         }
     }
 
+    private String resolveRequestUri(String requestUri) {
+        try {
+            URI uri = URI.create(requestUri);
+            String scheme = uri.getScheme();
+            if (scheme == null || !(scheme.equalsIgnoreCase("http") || scheme.equalsIgnoreCase("https"))) {
+                throw new IllegalStateException("Unsupported request_uri scheme");
+            }
+            ResponseEntity<String> response = restTemplate.getForEntity(uri, String.class);
+            if (!response.getStatusCode().is2xxSuccessful()) {
+                throw new IllegalStateException("Failed to resolve request_uri (HTTP " + response.getStatusCode() + ")");
+            }
+            String body = response.getBody();
+            if (body == null || body.isBlank()) {
+                throw new IllegalStateException("request_uri did not return a request object");
+            }
+            return body.trim();
+        } catch (IllegalStateException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Failed to resolve request_uri", e);
+        }
+    }
+
     private PendingRequest parseRequestObject(String requestObject, String expectedState, String incomingRedirectUri) throws Exception {
         SignedJWT requestJwt = SignedJWT.parse(requestObject);
         JWTClaimsSet claims = requestJwt.getJWTClaimsSet();
@@ -299,7 +340,10 @@ public class Oid4vpController {
         String dcqlQuery = claims.getStringClaim("dcql_query");
         String nonce = claims.getStringClaim("nonce");
         String state = claims.getStringClaim("state");
-        if (state == null || !state.equals(expectedState)) {
+        if (state == null || state.isBlank()) {
+            throw new IllegalStateException("Missing state in request object");
+        }
+        if (expectedState != null && !expectedState.isBlank() && !state.equals(expectedState)) {
             throw new IllegalStateException("State mismatch in request object");
         }
         String clientMetadata = extractClientMetadata(claims.getClaim("client_metadata"));

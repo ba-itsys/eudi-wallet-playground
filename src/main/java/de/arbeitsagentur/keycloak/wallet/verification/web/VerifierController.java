@@ -7,6 +7,7 @@ import de.arbeitsagentur.keycloak.wallet.verification.service.TokenViewService;
 import de.arbeitsagentur.keycloak.wallet.verification.service.TrustListService;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerifierAuthService;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerifierCryptoService;
+import de.arbeitsagentur.keycloak.wallet.verification.service.RequestObjectService;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerifierKeyService;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerificationSteps;
 import de.arbeitsagentur.keycloak.wallet.verification.session.VerifierSession;
@@ -17,11 +18,14 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
+import com.nimbusds.jwt.SignedJWT;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -50,6 +54,7 @@ public class VerifierController {
     private final VerifierAuthService verifierAuthService;
     private final VerifierCryptoService verifierCryptoService;
     private final TokenViewService tokenViewService;
+    private final RequestObjectService requestObjectService;
     private final ObjectMapper objectMapper;
     private final VerifierProperties properties;
     private final DebugLogService debugLogService;
@@ -62,6 +67,7 @@ public class VerifierController {
                               VerifierAuthService verifierAuthService,
                               VerifierCryptoService verifierCryptoService,
                               TokenViewService tokenViewService,
+                              RequestObjectService requestObjectService,
                               ObjectMapper objectMapper,
                               VerifierProperties properties,
                               DebugLogService debugLogService) {
@@ -73,6 +79,7 @@ public class VerifierController {
         this.verifierAuthService = verifierAuthService;
         this.verifierCryptoService = verifierCryptoService;
         this.tokenViewService = tokenViewService;
+        this.requestObjectService = requestObjectService;
         this.objectMapper = objectMapper;
         this.properties = properties;
         this.debugLogService = debugLogService;
@@ -110,6 +117,40 @@ public class VerifierController {
         return Map.of("dcql_query", dcql);
     }
 
+    @GetMapping(value = "/request-object/{id}", produces = "application/jwt")
+    public ResponseEntity<String> requestObject(@PathVariable("id") String id, HttpServletRequest request) {
+        String payload = requestObjectService.fetch(id);
+        if (payload == null || payload.isBlank()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body("request object not found or expired");
+        }
+        String state = "unknown";
+        try {
+            SignedJWT jwt = SignedJWT.parse(payload);
+            String extracted = jwt.getJWTClaimsSet().getStringClaim("state");
+            if (extracted != null && !extracted.isBlank()) {
+                state = extracted;
+            }
+        } catch (Exception ignored) {
+        }
+        debugLogService.addVerification(
+                state,
+                "Authorization",
+                "request_uri retrieval",
+                "GET",
+                request.getRequestURI(),
+                Map.of(),
+                "",
+                HttpStatus.OK.value(),
+                Map.of("Content-Type", "application/jwt"),
+                payload,
+                "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#name-request-parameter",
+                tokenViewService.decodeJwtLike(payload)
+        );
+        return ResponseEntity.ok()
+                .contentType(MediaType.valueOf("application/jwt"))
+                .body(payload);
+    }
+
     @PostMapping("/start")
     public ResponseEntity<Void> startVerification(@RequestParam(name = "dcqlQuery", required = false)
                                                   String dcqlQuery,
@@ -131,6 +172,8 @@ public class VerifierController {
                                                   String attestationIssuer,
                                                   @RequestParam(name = "responseType", required = false)
                                                   String responseType,
+                                                  @RequestParam(name = "requestObjectMode", required = false)
+                                                  String requestObjectMode,
                                                   @RequestParam(name = "trustList", required = false)
                                                   String trustList,
                                                   HttpServletRequest request) {
@@ -193,6 +236,7 @@ public class VerifierController {
                 attestationCert,
                 attestationIssuer,
                 responseType,
+                requestObjectMode,
                 baseUri
         );
         debugLogService.addVerification(
@@ -205,7 +249,7 @@ public class VerifierController {
                 "",
                 302,
                 Map.of("Location", walletAuth.uri().toString()),
-                "state=" + state + "\nnonce=" + nonce + "\ntrust_list=" + (trustList != null ? trustList : trustListService.defaultTrustListId()),
+                "state=" + state + "\nnonce=" + nonce + "\ntrust_list=" + (trustList != null ? trustList : trustListService.defaultTrustListId()) + "\nrequest_mode=" + (walletAuth.usedRequestUri() ? "request_uri" : "request"),
                 "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#vp_token_request",
                 null);
         if ("verifier_attestation".equalsIgnoreCase(authType) && walletAuth.attestationJwt() != null && !walletAuth.attestationJwt().isBlank()) {
@@ -386,12 +430,15 @@ public class VerifierController {
         mv.addObject("vpTokenRaw", vpTokenRaw);
         mv.addObject("vpTokenRawDisplay", tokenViewService.presentableToken(vpTokenRaw));
         mv.addObject("idToken", idToken);
-        mv.addObject("claims", payload);
+        Map<String, Object> claimsOnly = payload == null ? Map.of() : new LinkedHashMap<>(payload);
+        claimsOnly.remove("key_binding_jwt");
+        claimsOnly.remove("dpop_token");
+        mv.addObject("claims", claimsOnly);
         mv.addObject("keyBindingJwt", payload.getOrDefault("key_binding_jwt", null));
         mv.addObject("dpopToken", payload.getOrDefault("dpop_token", null));
         mv.addObject("verificationDebug", debugLogService.verification());
         try {
-            mv.addObject("claimsJson", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(payload));
+            mv.addObject("claimsJson", objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(claimsOnly));
         } catch (Exception ignored) {
             mv.addObject("claimsJson", "{}");
         }

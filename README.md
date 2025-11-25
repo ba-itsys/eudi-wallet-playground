@@ -26,15 +26,17 @@ Start Keycloak:
  docker compose up -d keycloak
  ```
 
-Keycloak will be available on http://localhost:8080 with admin credentials `admin` / `admin`.
+Keycloak will be available on port 8080 of the host running Docker (for example http://your-hostname:8080) with admin credentials `admin` / `admin`.
 
 ## Running the wallet
+
+Export `KEYCLOAK_BASE_URL` to the reachable Keycloak base URL first (for Docker Compose on the same host: `http://localhost:8080`; for deployments: `https://your-keycloak.example.com`).
 
 ```bash
 mvn spring-boot:run
 ```
 
-Visit http://localhost:3000 and:
+Visit your deployed host (for example http://your-hostname:3000) and:
 
 1. Click “Sign in with Keycloak”, authenticate as `test` / `test`.
 2. Press “Issue Credential”; the issued SD-JWT credential (the signed JWT plus all disclosures) is saved under `data/credentials/<subject>-<timestamp>.json`.  
@@ -81,7 +83,7 @@ sequenceDiagram
 
 ### Requesting and verifying a presentation (OID4VP)
 
-1. **Authorization Request** – http://localhost:3000/verifier/ issues an OID4VP 1.0 request with:
+1. **Authorization Request** – `https://<your-host>/verifier/` issues an OID4VP 1.0 request with:
    - `response_type=vp_token` (or `vp_token id_token`)
    - `response_mode=direct_post` and `response_uri` back to `/verifier/callback`
    - `client_id` (environment variable `VERIFIER_CLIENT_ID`, supports plain IDs, `x509_hash:<hash>`, or `verifier_attestation:<sub>`)
@@ -165,6 +167,9 @@ VERIFIER_CLIENT_ID_SCHEME=pre-registered
 VERIFIER_WALLET_AUTH_ENDPOINT=
 DCQL_QUERY_FILE=
 DEFAULT_DCQL_QUERY=
+MAX_HTTP_REQUEST_HEADER_SIZE=64KB
+MAX_HTTP_RESPONSE_HEADER_SIZE=64KB
+VERIFIER_MAX_REQUEST_OBJECT_INLINE_BYTES=12000
 ```
 
 Credential configurations and scopes are discovered from the issuer metadata (`credential_configurations_supported`); no manual list is maintained in `application.yml`.

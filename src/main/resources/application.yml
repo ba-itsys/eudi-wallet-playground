@@ -1,6 +1,7 @@
 server:
   port: ${PORT:3000}
   max-http-request-header-size: ${MAX_HTTP_REQUEST_HEADER_SIZE:64KB} # allow large OID4VP request objects with verifier attestation
+  max-http-response-header-size: ${MAX_HTTP_RESPONSE_HEADER_SIZE:64KB} # allow large Location headers when redirecting with request objects
 spring:
   main:
     allow-bean-definition-overriding: true
@@ -24,3 +25,4 @@ verifier:
   wallet-auth-endpoint: ${VERIFIER_WALLET_AUTH_ENDPOINT:}
   client-id: ${VERIFIER_CLIENT_ID:wallet-verifier}
   keys-file: ${VERIFIER_KEYS_FILE:config/verifier-keys.json}
+  max-request-object-inline-bytes: ${VERIFIER_MAX_REQUEST_OBJECT_INLINE_BYTES:12000}
