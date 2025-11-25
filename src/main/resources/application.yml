@@ -23,4 +23,4 @@ verifier:
   default-dcql-query: ${DEFAULT_DCQL_QUERY:}
   wallet-auth-endpoint: ${VERIFIER_WALLET_AUTH_ENDPOINT:}
   client-id: ${VERIFIER_CLIENT_ID:wallet-verifier}
-  encryption-key-file: ${VERIFIER_ENCRYPTION_KEY_FILE:config/verifier-enc-key.json}
+  keys-file: ${VERIFIER_KEYS_FILE:config/verifier-keys.json}

@@ -12,7 +12,7 @@ public record VerifierProperties(
         String defaultDcqlQuery,
         String walletAuthEndpoint,
         String clientId,
-        Path encryptionKeyFile
+        Path keysFile
 ) {
     public String clientId() {
         return clientId != null ? clientId : "wallet-verifier";

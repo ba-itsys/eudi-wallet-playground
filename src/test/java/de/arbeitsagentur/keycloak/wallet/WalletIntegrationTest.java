@@ -74,13 +74,14 @@ class WalletIntegrationTest {
     private static final String TEST_PASSWORD = "test";
 
     private static final Logger KEYCLOAK_LOG = LoggerFactory.getLogger("KeycloakContainer");
+    private static final Path REALM_EXPORT = Path.of("config/keycloak/realm-export.json").toAbsolutePath();
 
     @Container
     static GenericContainer<?> keycloak = new GenericContainer<>("quay.io/keycloak/keycloak:26.4.5")
             .withEnv("KEYCLOAK_ADMIN", "admin")
             .withEnv("KEYCLOAK_ADMIN_PASSWORD", "admin")
             .withExposedPorts(8080)
-            .withCopyFileToContainer(MountableFile.forClasspathResource("realm-export.json"),
+            .withCopyFileToContainer(MountableFile.forHostPath(REALM_EXPORT),
                     "/opt/keycloak/data/import/realm-export.json")
             .withCommand("start-dev", "--import-realm", "--features=oid4vc-vci")
             .withLogConsumer(new Slf4jLogConsumer(KEYCLOAK_LOG))

@@ -19,12 +19,6 @@ import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
-import org.bouncycastle.cert.X509CertificateHolder;
-import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
-import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
-import org.bouncycastle.jce.provider.BouncyCastleProvider;
-import org.bouncycastle.operator.ContentSigner;
-import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
@@ -40,13 +34,11 @@ import org.springframework.web.util.UriComponentsBuilder;
 import org.springframework.web.util.UriUtils;
 
 import java.io.ByteArrayInputStream;
-import java.math.BigInteger;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.security.KeyFactory;
 import java.security.MessageDigest;
 import java.security.PrivateKey;
-import java.security.SecureRandom;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.security.spec.PKCS8EncodedKeySpec;
@@ -61,8 +53,6 @@ import java.util.UUID;
 @Controller
 @RequestMapping("/verifier")
 public class VerifierController {
-    private static final BouncyCastleProvider BC_PROVIDER = new BouncyCastleProvider();
-
     private final DcqlService dcqlService;
     private final VerifierSessionService verifierSessionService;
     private final TrustListService trustListService;
@@ -278,20 +268,18 @@ public class VerifierController {
                 .queryParam("response_uri", qp(callback.toString()))
                 .queryParam("state", qp(state))
                 .queryParam("dcql_query", qp(dcqlQuery));
-        if ("x509_hash".equalsIgnoreCase(authType) && walletClientCert != null && walletClientCert.contains("PRIVATE KEY")) {
-            try {
-                RSAKey popKey = parseAttestationKey(walletClientCert);
-                List<com.nimbusds.jose.util.Base64> x5c = extractCertChain(walletClientCert);
-                String requestObject = buildRequestObject(callback.toString(), state, nonce, effectiveClientId, effectiveResponseType, dcqlQuery, clientMetadata, null, x5c, popKey);
-                populated.queryParam("request", qp(requestObject));
-                includeClientCertParam = false;
-            } catch (Exception ignored) {
-                includeClientCertParam = true;
+        if ("x509_hash".equalsIgnoreCase(authType)) {
+            RSAKey popKey = parseAttestationKey(walletClientCert);
+            List<com.nimbusds.jose.util.Base64> x5c = extractCertChain(walletClientCert);
+            if (x5c.isEmpty()) {
+                throw new IllegalStateException("client_cert must include a certificate chain for x509_hash");
             }
+            String requestObject = buildRequestObject(callback.toString(), state, nonce, effectiveClientId, effectiveResponseType, dcqlQuery, clientMetadata, null, x5c, popKey);
+            populated.queryParam("request", qp(requestObject));
+            includeClientCertParam = false;
         }
         if ("verifier_attestation".equalsIgnoreCase(authType)) {
-            RSAKey verifierKey = verifierKeyService.loadOrCreateKey();
-            RSAKey attestationKey = verifierKey;
+            RSAKey attestationKey = verifierKeyService.loadOrCreateSigningKey();
             if (attestationCert != null && !attestationCert.isBlank()) {
                 attestationKey = parseAttestationKey(attestationCert);
             }
@@ -993,46 +981,24 @@ public class VerifierController {
             if (certBlock == null || certBlock.isBlank()) {
                 throw new IllegalStateException("No certificate found in client_cert");
             }
-            String normalizedCert = toPem(Base64.getMimeDecoder().decode(certBlock), "CERTIFICATE");
-            String combined = providedPem.contains("CERTIFICATE") ? providedPem : normalizedCert;
-            return new X509Material(normalizedCert, null, combined, "client_cert");
+            RSAKey rsaKey = parseAttestationKey(providedPem);
+            try {
+                String normalizedCert = toPem(Base64.getMimeDecoder().decode(certBlock), "CERTIFICATE");
+                String keyPem = toPem(rsaKey.toRSAPrivateKey().getEncoded(), "PRIVATE KEY");
+                String combined = normalizedCert + "\n" + keyPem;
+                return new X509Material(normalizedCert, keyPem, combined, "client_cert", rsaKey);
+            } catch (Exception e) {
+                throw new IllegalStateException("Failed to prepare client_cert material", e);
+            }
         }
-        RSAKey verifierKey = verifierKeyService.loadOrCreateKey();
-        X509Certificate certificate = selfSignedCertificate(verifierKey);
+        RSAKey signingKey = verifierKeyService.loadOrCreateSigningKey();
         try {
-            String certPem = toPem(certificate.getEncoded(), "CERTIFICATE");
-            String keyPem = toPem(verifierKey.toRSAPrivateKey().getEncoded(), "PRIVATE KEY");
+            String certPem = verifierKeyService.signingCertificatePem();
+            String keyPem = toPem(signingKey.toRSAPrivateKey().getEncoded(), "PRIVATE KEY");
             String combined = certPem + "\n" + keyPem;
-            return new X509Material(certPem, keyPem, combined, "verifier_self_signed");
+            return new X509Material(certPem, keyPem, combined, "verifier_self_signed", signingKey);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to prepare verifier x509 material", e);
-        }
-    }
-
-    private X509Certificate selfSignedCertificate(RSAKey key) {
-        try {
-            Date from = Date.from(java.time.Instant.parse("2024-01-01T00:00:00Z"));
-            Date to = Date.from(java.time.Instant.parse("2045-01-01T00:00:00Z"));
-            byte[] pubDigest = MessageDigest.getInstance("SHA-256").digest(key.toRSAPublicKey().getEncoded());
-            BigInteger serial = new BigInteger(1, pubDigest);
-            org.bouncycastle.asn1.x500.X500Name subject = new org.bouncycastle.asn1.x500.X500Name("CN=Verifier Demo");
-            ContentSigner signer = new JcaContentSignerBuilder("SHA256withRSA")
-                    .setProvider(BC_PROVIDER)
-                    .build(key.toRSAPrivateKey());
-            JcaX509v3CertificateBuilder builder = new JcaX509v3CertificateBuilder(
-                    subject,
-                    serial,
-                    from,
-                    to,
-                    subject,
-                    key.toRSAPublicKey()
-            );
-            X509CertificateHolder holder = builder.build(signer);
-            return new JcaX509CertificateConverter()
-                    .setProvider(BC_PROVIDER)
-                    .getCertificate(holder);
-        } catch (Exception e) {
-            throw new IllegalStateException("Failed to generate verifier x509 certificate", e);
         }
     }
 
@@ -1047,7 +1013,7 @@ public class VerifierController {
         return sb.toString();
     }
 
-    private record X509Material(String certificatePem, String keyPem, String combinedPem, String source) {
+    private record X509Material(String certificatePem, String keyPem, String combinedPem, String source, RSAKey rsaKey) {
     }
 
     private UriComponentsBuilder baseUri(HttpServletRequest request) {

@@ -77,7 +77,7 @@ sequenceDiagram
 
 - **OID4VCI 1.0** – Credential proof building and issuance request body: `src/main/java/de/arbeitsagentur/keycloak/wallet/issuance/service/CredentialService.java`. Authorization details and scope handling: `src/main/java/de/arbeitsagentur/keycloak/wallet/issuance/oidc/OidcClient.java`.
 - **OID4VP 1.0 + DCQL** – Wallet-side presentation flow and consent: `src/main/java/de/arbeitsagentur/keycloak/wallet/demo/oid4vp/Oid4vpController.java`, request parsing/matching: `src/main/java/de/arbeitsagentur/keycloak/wallet/demo/oid4vp/PresentationService.java`, verifier endpoints: `src/main/java/de/arbeitsagentur/keycloak/wallet/verification/web/VerifierController.java`.
-- **PID Rulebook (urn:eudi:pid:1)** – PID credential scope and claim mapping defined in `keycloak/realm-export.json` and `src/test/resources/realm-export.json`; default DCQL query built in `src/main/java/de/arbeitsagentur/keycloak/wallet/verification/service/DcqlService.java` requests only `given_name` and `family_name`.
+- **PID Rulebook (urn:eudi:pid:1)** – PID credential scope and claim mapping defined in `config/keycloak/realm-export.json`; default DCQL query built in `src/main/java/de/arbeitsagentur/keycloak/wallet/verification/service/DcqlService.java` requests only `given_name` and `family_name`.
 
 ### Requesting and verifying a presentation (OID4VP)
 
@@ -142,7 +142,7 @@ Optional DCQL helpers:
 - `credential_set` lets you narrow acceptable credentials by id/vct/format (array of objects such as `{ "id": "pid" }` or `{ "vct": "https://credentials.example.com/identity_credential" }`).
 - `claim_set` lets you express claim groups that must be satisfied together (array of objects like `{ "claims": [ { "path": ["given_name"] }, { "path": ["family_name"] } ] }`).
 
-The trust list anchors verification to the Keycloak realm certificate stored under `keycloak/keys/wallet-demo-ec-cert.pem` (ES256). Add further certificates to `src/main/resources/trust-list.json` when integrating additional issuers (for example, a sandbox or a production EUDI wallet).
+The trust list anchors verification to the Keycloak realm certificate stored under `config/keycloak/keys/wallet-demo-ec-cert.pem` (ES256). Add further certificates to `src/main/resources/trust-list.json` when integrating additional issuers (for example, a sandbox or a production EUDI wallet).
 
 ### Using an external wallet
 
@@ -180,12 +180,10 @@ mvn verify
 
 Always run the tests after you modify the codebase (see `AGENTS.md`). The test performs the HTML form login against Keycloak, stores a credential, requests a presentation (using the same parameters as the verifier UI), and verifies both a success case and a tampered `vp_token` against the trust list.
 
- ## Project structure
+## Project structure
 
+- `config/` – single home for key material (`wallet-keys.json`, `verifier-keys.json` for encryption + verifier_attestation/x509 PoP) and Keycloak assets (`keycloak/realm-export.json`, `keycloak/keys/…`, override verifier path via `VERIFIER_KEYS_FILE`)
 - `docker-compose.yml` – Keycloak setup with realm import
-- `keycloak/realm-export.json` – realm definition used by dev server and tests
-- `keycloak/keys/` – static EC signing key/certificate for VC issuance (plus RSA key reused for encryption)
-- `config/wallet-keys.json` – sample wallet key store
 - `src/main/java` – Spring Boot application (wallet controllers, OIDC helpers, credential issuer client, verifier, OID4VP handler)
 - `src/main/resources/templates` – Thymeleaf templates for wallet, verifier, and OID4VP submission
 - `src/test/java/de/arbeitsagentur/keycloak/wallet/WalletIntegrationTest.java` – Testcontainers-based system test
