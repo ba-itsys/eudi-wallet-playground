@@ -111,6 +111,7 @@ wallet:
     targetPort: 3000
     annotations:
       service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+  basePath: /wallet
   ingress:
     enabled: false
     className: ""
