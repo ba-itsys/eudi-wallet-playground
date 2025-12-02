@@ -33,7 +33,12 @@ class MockIssuerIntegrationTest {
     private ObjectMapper objectMapper;
 
     @DynamicPropertySource
-    static void overrideProperties(DynamicPropertyRegistry registry) {
+    static void overrideProperties(DynamicPropertyRegistry registry) throws Exception {
+        Files.deleteIfExists(CONFIG_FILE);
+        Path parent = CONFIG_FILE.getParent();
+        if (parent != null) {
+            Files.createDirectories(parent);
+        }
         registry.add("mock-issuer.configuration-file", () -> CONFIG_FILE.toAbsolutePath().toString());
     }
 
