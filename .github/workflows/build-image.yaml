@@ -29,6 +29,7 @@ jobs:
           mvn
           --batch-mode
           -DskipTests
+          -pl demo-app
           -Dspring-boot.build-image.imageName=ghcr.io/${{ github.repository }}:\${project.version}
           -Dspring-boot.build-image.publish=true
           spring-boot:build-image
