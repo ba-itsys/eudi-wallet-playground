@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.2](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.3.1...v1.3.2) (2025-12-11)
+
+
+### Bug Fixes
+
+* fix mock issuer config loading and styling ([137c83d](https://github.com/ba-itsys/eudi-wallet-playground/commit/137c83d7111db22fbc93b22a80c242212a75b469))
+
 ## [1.3.1](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.3.0...v1.3.1) (2025-12-11)
 
 
