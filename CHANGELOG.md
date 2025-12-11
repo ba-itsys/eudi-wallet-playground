@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.3](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.3.2...v1.3.3) (2025-12-11)
+
+
+### Bug Fixes
+
+* fix caching issues ([f9abb9d](https://github.com/ba-itsys/eudi-wallet-playground/commit/f9abb9dc56d99bb3d84f3cf0e636a77854513f17))
+
 ## [1.3.2](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.3.1...v1.3.2) (2025-12-11)
 
 
