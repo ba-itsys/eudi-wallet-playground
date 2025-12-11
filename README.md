@@ -243,6 +243,8 @@ Run `mvn verify -Paws-smoke -Daws.wallet.base-url=https://wallet.example.com/wal
 
 Use the bundled Helm chart under `charts/eudi-wallet-demo` to deploy Keycloak (with the realm import) and the Spring Boot wallet to Kubernetes. The chart is simplified for the AWS sandbox `wallet-demo` namespace and fronts the services with an AWS ALB (HTTP).
 
+Config/keys (realm export, wallet/verifier keys, mock issuer keys/configurations) must be supplied via `--set-file` flags—no defaults are packaged into the chart.
+
 ```bash
 AWS_PROFILE=AccountAdministratorAccess-207613817683 helm upgrade --install wallet-demo charts/eudi-wallet-demo -n wallet-demo \
   --set keycloak.publicHost=<public-host> \
