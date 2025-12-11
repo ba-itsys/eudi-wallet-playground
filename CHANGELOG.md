@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.4](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.3.3...v1.3.4) (2025-12-11)
+
+
+### Bug Fixes
+
+* **ci:** add workflow permission to push image ([e97c917](https://github.com/ba-itsys/eudi-wallet-playground/commit/e97c917b51e21696eef270e2172b846711ff94c1))
+
 ## [1.3.3](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.3.2...v1.3.3) (2025-12-11)
 
 
