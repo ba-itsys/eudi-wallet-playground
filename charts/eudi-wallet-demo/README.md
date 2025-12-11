@@ -27,9 +27,9 @@ helm upgrade --install wallet-demo charts/eudi-wallet-demo \
   --set wallet.image.tag=<wallet-image-tag> \
   --set keycloak.image.repository=<keycloak-image-repo> \
   --set keycloak.image.tag=<keycloak-image-tag> \
-  --set-file keycloak.realmJson=config/keycloak/realm-export.json \
-  --set-file wallet.files.walletKeys=config/wallet-keys.json \
-  --set-file wallet.files.verifierKeys=config/verifier-keys.json \
-  --set-file wallet.files.mockIssuerKeys=config/mock-issuer-keys.json \
-  --set-file wallet.files.mockIssuerConfigurations=config/mock-issuer-configurations.json
+  --set-file keycloak.realmJson=demo-app/config/keycloak/realm-export.json \
+  --set-file wallet.files.walletKeys=demo-app/config/wallet-keys.json \
+  --set-file wallet.files.verifierKeys=demo-app/config/verifier-keys.json \
+  --set-file wallet.files.mockIssuerKeys=demo-app/config/mock-issuer-keys.json \
+  --set-file wallet.files.mockIssuerConfigurations=demo-app/config/mock-issuer-configurations.json
 ```
