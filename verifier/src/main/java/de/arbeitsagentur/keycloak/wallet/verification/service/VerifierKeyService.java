@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.verification.service;
 
 import tools.jackson.databind.JsonNode;
@@ -19,6 +34,9 @@ import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jose.util.Base64;
 import com.nimbusds.jose.util.JSONObjectUtils;
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
+import org.bouncycastle.asn1.x509.Extension;
+import org.bouncycastle.asn1.x509.GeneralName;
+import org.bouncycastle.asn1.x509.GeneralNames;
 import org.bouncycastle.cert.X509CertificateHolder;
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter;
 import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder;
@@ -26,10 +44,13 @@ import org.bouncycastle.asn1.x500.X500Name;
 import org.bouncycastle.jce.provider.BouncyCastleProvider;
 import org.bouncycastle.operator.ContentSigner;
 import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
 import java.math.BigInteger;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
@@ -38,12 +59,14 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.text.ParseException;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.Date;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 
 @Service
 public class VerifierKeyService {
@@ -53,12 +76,21 @@ public class VerifierKeyService {
 
     private final VerifierProperties properties;
     private final ObjectMapper objectMapper;
+    private final String publicHost;
     private volatile RSAKey signingKey;
     private volatile RSAKey encryptionKey;
 
     public VerifierKeyService(VerifierProperties properties, ObjectMapper objectMapper) {
+        this(properties, objectMapper, null);
+    }
+
+    @Autowired
+    public VerifierKeyService(VerifierProperties properties,
+                              ObjectMapper objectMapper,
+                              @Value("${wallet.public-base-url:}") String publicBaseUrl) {
         this.properties = properties;
         this.objectMapper = objectMapper;
+        this.publicHost = parseHost(publicBaseUrl);
     }
 
     public RSAKey loadOrCreateSigningKey() {
@@ -178,6 +210,13 @@ public class VerifierKeyService {
             } else if (certificateFromX5c(signingKey).isEmpty()) {
                 signingKey = withCertificate(signingKey);
                 rewrite = true;
+            } else if (!certificateHasDnsSan(signingKey)) {
+                signingKey = withCertificate(signingKey);
+                rewrite = true;
+            } else if (publicHost != null && !publicHost.isBlank() && !certificateHasDnsSan(signingKey, publicHost)) {
+                // Ensure the demo signing cert is usable with x509_san_dns on the public host (e.g., CloudFront/ALB).
+                signingKey = withCertificate(signingKey);
+                rewrite = true;
             }
             if (encryptionKey == null) {
                 encryptionKey = generateEncryptionKey();
@@ -186,6 +225,65 @@ public class VerifierKeyService {
             if (keyFile != null && rewrite) {
                 persistKeys(keyFile);
             }
+        }
+    }
+
+    private boolean certificateHasDnsSan(RSAKey key) {
+        try {
+            if (key == null || key.getX509CertChain() == null || key.getX509CertChain().isEmpty()) {
+                return false;
+            }
+            byte[] der = key.getX509CertChain().get(0).decode();
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der));
+            return !dnsSans(cert).isEmpty();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean certificateHasDnsSan(RSAKey key, String requiredDns) {
+        if (requiredDns == null || requiredDns.isBlank()) {
+            return certificateHasDnsSan(key);
+        }
+        try {
+            if (key == null || key.getX509CertChain() == null || key.getX509CertChain().isEmpty()) {
+                return false;
+            }
+            byte[] der = key.getX509CertChain().get(0).decode();
+            CertificateFactory cf = CertificateFactory.getInstance("X.509");
+            X509Certificate cert = (X509Certificate) cf.generateCertificate(new ByteArrayInputStream(der));
+            return dnsSans(cert).contains(requiredDns);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Set<String> dnsSans(X509Certificate cert) throws Exception {
+        if (cert.getSubjectAlternativeNames() == null) {
+            return Set.of();
+        }
+        Set<String> values = new HashSet<>();
+        for (List<?> entry : cert.getSubjectAlternativeNames()) {
+            if (entry != null && entry.size() >= 2 && entry.get(0) instanceof Integer type && type == 2) {
+                Object value = entry.get(1);
+                if (value != null) {
+                    values.add(String.valueOf(value));
+                }
+            }
+        }
+        return values;
+    }
+
+    private String parseHost(String url) {
+        if (url == null || url.isBlank()) {
+            return null;
+        }
+        try {
+            URI uri = URI.create(url.trim());
+            return uri.getHost();
+        } catch (Exception e) {
+            return null;
         }
     }
 
@@ -329,6 +427,22 @@ public class VerifierKeyService {
                     subject,
                     key.toRSAPublicKey()
             );
+            List<String> sans = new ArrayList<>();
+            if (publicHost != null && !publicHost.isBlank()) {
+                sans.add(publicHost);
+            }
+            sans.add("verifier.localtest.me");
+            sans.add("verifier.localhost");
+            sans.add("localhost");
+            Set<String> seen = new HashSet<>();
+            List<GeneralName> names = new ArrayList<>();
+            for (String dns : sans) {
+                if (dns != null && !dns.isBlank() && seen.add(dns)) {
+                    names.add(new GeneralName(GeneralName.dNSName, dns));
+                }
+            }
+            GeneralNames subjectAltNames = new GeneralNames(names.toArray(new GeneralName[0]));
+            builder.addExtension(Extension.subjectAlternativeName, false, subjectAltNames);
             X509CertificateHolder holder = builder.build(signer);
             return new JcaX509CertificateConverter()
                     .setProvider(BC_PROVIDER)

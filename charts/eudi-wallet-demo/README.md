@@ -11,6 +11,17 @@ This chart targets the AWS sandbox `wallet-demo` namespace. It deploys Keycloak 
 
 Everything else is fixed to the AWS ALB HTTP setup used in the sandbox (no TLS in the ingress; ALB name and subnets are inlined).
 
+## OIDF conformance suite (Verifier)
+
+To drive the OIDF conformance suite from the deployed verifier UI, configure the suite API:
+
+- `wallet.conformance.baseUrl` (defaults to `https://demo.certification.openid.net`)
+- `wallet.conformance.apiKey` (optional; stored in the `wallet-demo-wallet` secret as `verifier-conformance-api-key`)
+
+These values are exposed to the container as `VERIFIER_CONFORMANCE_BASE_URL` and `VERIFIER_CONFORMANCE_API_KEY`.
+
+You can also enter/override the suite base URL and API key directly in `/verifier/conformance` (stored in the HTTP session), which is useful if you do not want to persist the API key as a Kubernetes secret.
+
 ## Build/push the wallet image
 ```
 mvn spring-boot:build-image -Dspring-boot.build-image.imageName=<repo>:<tag>

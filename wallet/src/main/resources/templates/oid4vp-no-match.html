@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>No matching credential</title>
+    <link rel="stylesheet" th:href="@{/css/consent.css}" />
+  </head>
+  <body>
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;">
+        <div>
+          <div class="wallet-brand">Wallet</div>
+          <h1 style="margin:0.35rem 0 0;">No matching credential</h1>
+        </div>
+        <span class="tag" th:text="'State: ' + ${state}">State</span>
+      </div>
+
+      <div style="margin-top:1.5rem;padding:1.5rem;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;">
+        <div style="display:flex;align-items:flex-start;gap:0.75rem;">
+          <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <line x1="12" y1="8" x2="12" y2="12"></line>
+            <line x1="12" y1="16" x2="12.01" y2="16"></line>
+          </svg>
+          <div>
+            <h3 style="margin:0 0 0.5rem;color:#991b1b;">No credential matches the request</h3>
+            <p style="margin:0;color:#7f1d1d;" th:text="${errorDescription}">
+              Your wallet does not contain a credential that matches what the verifier requested.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div th:if="${dcqlQuery}" style="margin-top:1rem;">
+        <details>
+          <summary>View requested credential details (dcql_query)</summary>
+          <pre th:text="${dcqlQuery}" style="background:#f8fafc;padding:1rem;border-radius:8px;overflow-x:auto;font-size:0.85rem;"></pre>
+        </details>
+      </div>
+
+      <div style="margin-top:1.5rem;padding:1rem;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;">
+        <p style="margin:0 0 0.5rem;font-weight:500;">What you can do:</p>
+        <ul style="margin:0;padding-left:1.25rem;color:#475569;">
+          <li>Obtain a matching credential from an issuer</li>
+          <li>Check if you have the correct wallet account selected</li>
+          <li>Contact the verifier for assistance</li>
+        </ul>
+      </div>
+
+      <form method="post" th:action="${redirectUri}" style="margin-top:1.5rem;">
+        <input type="hidden" name="state" th:value="${state}" />
+        <input type="hidden" name="error" th:value="${error}" />
+        <input type="hidden" name="error_description" th:value="${errorDescription}" />
+        <div class="actions" style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <button class="btn secondary" type="submit">Close and return to verifier</button>
+        </div>
+      </form>
+    </div>
+  </body>
+</html>

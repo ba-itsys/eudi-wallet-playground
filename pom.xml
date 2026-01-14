@@ -11,6 +11,7 @@
         <java.version>21</java.version>
         <spring.boot.version>4.0.0</spring.boot.version>
         <testcontainers.version>2.0.2</testcontainers.version>
+        <docker.api.version>1.44</docker.api.version>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -20,7 +21,9 @@
         <module>mdoc-lib</module>
         <module>wallet</module>
         <module>mock-issuer</module>
+        <module>conformance</module>
         <module>verifier</module>
+        <module>keycloak-oid4vp</module>
         <module>demo-app</module>
     </modules>
 

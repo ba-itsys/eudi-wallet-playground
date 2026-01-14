@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.mockissuer;
 
 import de.arbeitsagentur.keycloak.wallet.mockissuer.MockIssuerService.BuilderRequest;
@@ -15,9 +30,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.util.MultiValueMap;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.ResponseBody;
@@ -91,6 +108,19 @@ public class MockIssuerController {
     @ResponseBody
     public MockIssuerProperties.CredentialConfiguration createConfiguration(@RequestBody CreateConfigurationRequest request) {
         return configurationStore.addConfiguration(toConfiguration(request));
+    }
+
+    @PutMapping(value = "/mock-issuer/configurations/{id}", consumes = MediaType.APPLICATION_JSON_VALUE)
+    @ResponseBody
+    public MockIssuerProperties.CredentialConfiguration updateConfiguration(@PathVariable("id") String id, @RequestBody CreateConfigurationRequest request) {
+        return configurationStore.updateConfiguration(id, toConfiguration(request));
+    }
+
+    @DeleteMapping(value = "/mock-issuer/configurations/{id}")
+    @ResponseBody
+    public ResponseEntity<Void> deleteConfiguration(@PathVariable("id") String id) {
+        configurationStore.deleteConfiguration(id);
+        return ResponseEntity.noContent().build();
     }
 
     @PostMapping(value = "/mock-issuer/token", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
@@ -180,6 +210,7 @@ public class MockIssuerController {
         view.put("name", cfg.name());
         view.put("vct", cfg.vct());
         view.put("claims", cfg.claims().stream().map(this::toViewClaim).toList());
+        view.put("editable", configurationStore.isUserConfiguration(cfg.id()));
         return view;
     }
 

@@ -1,9 +1,31 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.mockissuer;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
+import com.nimbusds.jose.JWSAlgorithm;
+import com.nimbusds.jose.crypto.ECDSAVerifier;
 import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jwt.SignedJWT;
+import de.arbeitsagentur.keycloak.wallet.common.credential.CredentialBuildResult;
 import de.arbeitsagentur.keycloak.wallet.common.mdoc.MdocCredentialBuilder;
 import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtCredentialBuilder;
 import de.arbeitsagentur.keycloak.wallet.mockissuer.config.MockIssuerConfigurationStore;
@@ -37,6 +59,7 @@ import static org.springframework.http.HttpStatus.UNAUTHORIZED;
 
 @Service
 public class MockIssuerService {
+    private static final Logger LOG = LoggerFactory.getLogger(MockIssuerService.class);
     private final MockIssuerProperties properties;
     private final ObjectMapper objectMapper;
     private final SdJwtCredentialBuilder sdJwtCredentialBuilder;
@@ -54,6 +77,7 @@ public class MockIssuerService {
         this.configurationStore = configurationStore;
         this.sdJwtCredentialBuilder = new SdJwtCredentialBuilder(objectMapper, keyService.signingKey(), properties.credentialTtl());
         this.mdocCredentialBuilder = new MdocCredentialBuilder(keyService.signingKey(), properties.credentialTtl());
+        LOG.info("MockIssuerService initialized with credentialTtl={}", properties.credentialTtl());
     }
 
     public OfferResult createOffer(BuilderRequest request, String issuer) {
@@ -309,6 +333,8 @@ public class MockIssuerService {
     }
 
     private BuiltCredential buildCredential(String format, OfferState offer, String issuer, JsonNode cnf) {
+        LOG.debug("Building credential: format={}, configurationId={}, vct={}, issuer={}",
+                format, offer.configurationId(), offer.vct(), issuer);
         if ("mso_mdoc".equalsIgnoreCase(format)) {
             return buildMdoc(offer, issuer, cnf);
         }
@@ -316,14 +342,18 @@ public class MockIssuerService {
     }
 
     private BuiltCredential buildSdJwt(OfferState offer, String issuer, JsonNode cnf) {
-        de.arbeitsagentur.keycloak.wallet.common.sdjwt.CredentialBuildResult result =
+        LOG.debug("Building SD-JWT credential: vct={}, claims={}", offer.vct(), offer.claims().keySet());
+        CredentialBuildResult result =
                 sdJwtCredentialBuilder.build(offer.configurationId(), offer.vct(), issuer, offer.claims(), cnf);
+        LOG.debug("SD-JWT credential built successfully");
         return new BuiltCredential(result.encoded(), result.disclosures(), result.decoded(), result.vct(), result.format());
     }
 
     private BuiltCredential buildMdoc(OfferState offer, String issuer, JsonNode cnf) {
-        de.arbeitsagentur.keycloak.wallet.common.mdoc.CredentialBuildResult result =
+        LOG.debug("Building mDoc credential: docType={}, claims={}", offer.vct(), offer.claims().keySet());
+        CredentialBuildResult result =
                 mdocCredentialBuilder.build(offer.configurationId(), offer.vct(), issuer, offer.claims(), cnf);
+        LOG.debug("mDoc credential built successfully with validityInfo: {}", result.decoded().get("validityInfo"));
         return new BuiltCredential(result.encoded(), result.disclosures(), result.decoded(), result.vct(), result.format());
     }
 
@@ -334,6 +364,9 @@ public class MockIssuerService {
         }
         try {
             SignedJWT jwt = SignedJWT.parse(proofJwt);
+            if (jwt.getHeader().getAlgorithm() == null || !JWSAlgorithm.ES256.equals(jwt.getHeader().getAlgorithm())) {
+                throw new ResponseStatusException(BAD_REQUEST, "Unsupported proof algorithm");
+            }
             if (jwt.getJWTClaimsSet().getExpirationTime() != null
                     && jwt.getJWTClaimsSet().getExpirationTime().toInstant().isBefore(Instant.now())) {
                 throw new ResponseStatusException(BAD_REQUEST, "Proof expired");
@@ -343,11 +376,19 @@ public class MockIssuerService {
                 throw new ResponseStatusException(BAD_REQUEST, "c_nonce mismatch");
             }
             List<String> audience = jwt.getJWTClaimsSet().getAudience();
-            if (issuer != null && !audience.isEmpty() && !issuer.equals(audience.get(0))) {
+            if (issuer != null && !audience.isEmpty() && !audience.contains(issuer)) {
                 throw new ResponseStatusException(BAD_REQUEST, "audience mismatch");
             }
             JWK jwk = jwt.getHeader().getJWK();
-            return new ProofValidation(jwk != null ? objectMapper.readTree(jwk.toJSONString()) : null);
+            if (!(jwk instanceof ECKey ecKey)) {
+                throw new ResponseStatusException(BAD_REQUEST, "Proof jwk missing or unsupported");
+            }
+            if (!jwt.verify(new ECDSAVerifier(ecKey.toECPublicKey()))) {
+                throw new ResponseStatusException(BAD_REQUEST, "Invalid proof signature");
+            }
+            ObjectNode cnf = objectMapper.createObjectNode();
+            cnf.set("jwk", objectMapper.readTree(ecKey.toPublicJWK().toJSONString()));
+            return new ProofValidation(cnf);
         } catch (ResponseStatusException e) {
             throw e;
         } catch (Exception e) {

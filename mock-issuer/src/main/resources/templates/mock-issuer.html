@@ -70,7 +70,7 @@
         </div>
       </div>
 
-      <div class="builder is-hidden" id="configuration-editor" data-section-block="configuration-editor">
+      <div class="builder" id="configuration-editor" data-section-block="configuration-editor">
         <div class="builder-title">
           <div>
             <div class="muted">Define and save credential types</div>
@@ -80,8 +80,23 @@
         </div>
         <div class="builder-header">
           <div class="field">
-            <label>New credential type</label>
-            <small class="muted">Create ad-hoc credential types for the mock issuer. Saved under the data folder (custom configurations).</small>
+            <label>Edit or create credential types</label>
+            <small class="muted">Select an existing user-defined configuration to edit, or create a new one.</small>
+          </div>
+          <div class="actions">
+            <div class="field inline" style="margin:0;">
+              <label class="sub-label" for="edit-config-select">Edit existing</label>
+              <select id="edit-config-select">
+                <option value="">-- New configuration --</option>
+              </select>
+            </div>
+            <button type="button" class="btn secondary mini" id="delete-configuration" style="display:none;" title="Delete this configuration">Delete</button>
+          </div>
+        </div>
+        <div class="builder-header">
+          <div class="field">
+            <label id="config-form-label">New credential type</label>
+            <small class="muted" id="config-form-hint">Create ad-hoc credential types for the mock issuer. Saved under the data folder (custom configurations).</small>
           </div>
           <div class="actions">
             <button type="button" class="btn secondary mini" id="add-claim">Add claim</button>
@@ -125,13 +140,14 @@
         <div class="actions" style="justify-content: space-between; align-items: center;">
           <div>
             <button type="button" id="save-configuration" class="btn">Save credential type</button>
+            <button type="button" id="clear-form" class="btn secondary" style="margin-left:0.5rem;">Clear form</button>
           </div>
           <small class="muted">Saved configurations are immediately available in the builder below.</small>
         </div>
         <div id="configuration-feedback" class="alert success" style="display:none;"></div>
       </div>
 
-      <div class="builder is-active" id="credential-builder" data-section-block="credential-builder">
+      <div class="builder" id="credential-builder" data-section-block="credential-builder">
         <div class="builder-title">
           <div>
             <div class="muted">Issue SD-JWT or mDoc credentials</div>
@@ -233,8 +249,7 @@
     <script th:inline="javascript">
       (() => {
         const issuer = /*[[${issuer}]]*/ "";
-        const initialConfigurations = /*[[${configurationData}]]*/ [];
-        let configurationList = Array.isArray(initialConfigurations) ? [...initialConfigurations] : [];
+        let configurationList = [...(/*[[${configurationData}]]*/ [])];
         let defaultConfigurationId = /*[[${defaultConfigurationId}]]*/ "";
         const configurationFile = /*[[${configurationFile}]]*/ "";
 
@@ -266,9 +281,15 @@
         const addClaimBtn = document.getElementById("add-claim");
         const newClaimsContainer = document.getElementById("new-claims");
         const saveConfigurationBtn = document.getElementById("save-configuration");
+        const clearFormBtn = document.getElementById("clear-form");
         const configurationFeedback = document.getElementById("configuration-feedback");
         const sectionTabs = document.querySelectorAll("[data-section-tab]");
         const sectionBlocks = document.querySelectorAll("[data-section-block]");
+        const editConfigSelect = document.getElementById("edit-config-select");
+        const deleteConfigurationBtn = document.getElementById("delete-configuration");
+        const configFormLabel = document.getElementById("config-form-label");
+        const configFormHint = document.getElementById("config-form-hint");
+        let editingConfigurationId = null;
         // Keep API calls aligned with the issuer path (resilient to reverse proxy prefixes).
         const builderBasePath = (() => {
           try {
@@ -314,7 +335,6 @@
           sectionBlocks.forEach((block) => {
             const isActive = block.dataset.sectionBlock === sectionId;
             block.classList.toggle("is-hidden", !isActive);
-            block.classList.toggle("is-active", isActive);
             block.setAttribute("aria-hidden", isActive ? "false" : "true");
           });
         }
@@ -723,36 +743,182 @@
           hideConfigurationFeedback();
           const payload = buildNewConfigurationPayload();
           if (!payload) return;
+          const isUpdate = editingConfigurationId != null;
           try {
-            const res = await fetch(`${builderBasePath}/configurations`, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload)
-            });
+            let res;
+            if (isUpdate) {
+              res = await fetch(`${builderBasePath}/configurations/${encodeURIComponent(editingConfigurationId)}`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+              });
+            } else {
+              res = await fetch(`${builderBasePath}/configurations`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload)
+              });
+            }
             if (!res.ok) {
               throw new Error(await res.text());
             }
-            const created = await res.json();
-            configurationList.push(created);
-            addConfigurationOption(created);
-            defaultConfigurationId = created.id || defaultConfigurationId;
-            showConfigurationFeedback(
-              `Saved ${created.name || created.id} to ${configurationFile || "the configuration file"}.`,
-              "success"
-            );
-            if (newConfigId) newConfigId.value = "";
-            if (newConfigName) newConfigName.value = "";
-            if (newConfigScope) newConfigScope.value = "";
-            if (newConfigVct) newConfigVct.value = created.vct || "";
-            if (newConfigFormat) newConfigFormat.value = created.format || "dc+sd-jwt";
-            newClaimTemplates = created.claims || [];
-            renderNewClaimTemplates();
+            const saved = await res.json();
+            saved.editable = true;
+            if (isUpdate) {
+              const oldId = editingConfigurationId;
+              const idx = configurationList.findIndex(c => c.id === oldId);
+              if (idx >= 0) {
+                configurationList[idx] = saved;
+              }
+              updateConfigurationOption(oldId, saved);
+              populateEditSelect();
+              showConfigurationFeedback(
+                `Updated ${saved.name || saved.id}.`,
+                "success"
+              );
+              editingConfigurationId = saved.id;
+              if (editConfigSelect) editConfigSelect.value = saved.id;
+            } else {
+              configurationList.push(saved);
+              addConfigurationOption(saved);
+              populateEditSelect();
+              defaultConfigurationId = saved.id || defaultConfigurationId;
+              showConfigurationFeedback(
+                `Saved ${saved.name || saved.id} to ${configurationFile || "the configuration file"}.`,
+                "success"
+              );
+              clearConfigurationForm();
+            }
           } catch (e) {
             showConfigurationFeedback("Could not save configuration: " + (e?.message || e), "error");
           }
         }
 
         saveConfigurationBtn?.addEventListener("click", saveConfiguration);
+
+        function populateEditSelect() {
+          if (!editConfigSelect) return;
+          editConfigSelect.innerHTML = '<option value="">-- New configuration --</option>';
+          configurationList.filter(c => c.editable).forEach(cfg => {
+            const option = document.createElement("option");
+            option.value = cfg.id;
+            option.textContent = cfg.name || cfg.id;
+            editConfigSelect.appendChild(option);
+          });
+        }
+
+        function loadConfigurationIntoForm(cfg) {
+          if (!cfg) {
+            clearConfigurationForm();
+            return;
+          }
+          editingConfigurationId = cfg.id;
+          if (newConfigId) newConfigId.value = cfg.id || "";
+          if (newConfigName) newConfigName.value = cfg.name || "";
+          if (newConfigScope) newConfigScope.value = cfg.scope || "";
+          if (newConfigVct) newConfigVct.value = cfg.vct || "";
+          if (newConfigFormat) newConfigFormat.value = cfg.format || "dc+sd-jwt";
+          newClaimTemplates = (cfg.claims || []).map(c => ({
+            name: c.name || "",
+            label: c.label || "",
+            defaultValue: c.defaultValue || "",
+            required: Boolean(c.required)
+          }));
+          renderNewClaimTemplates();
+          updateFormMode();
+        }
+
+        function clearConfigurationForm() {
+          editingConfigurationId = null;
+          if (newConfigId) newConfigId.value = "";
+          if (newConfigName) newConfigName.value = "";
+          if (newConfigScope) newConfigScope.value = "";
+          if (newConfigVct) newConfigVct.value = "";
+          if (newConfigFormat) newConfigFormat.value = "dc+sd-jwt";
+          newClaimTemplates = [{ name: "given_name", label: "Given name", defaultValue: "Alice", required: true }];
+          renderNewClaimTemplates();
+          if (editConfigSelect) editConfigSelect.value = "";
+          updateFormMode();
+        }
+
+        function updateFormMode() {
+          const isEditing = editingConfigurationId != null;
+          if (configFormLabel) {
+            configFormLabel.textContent = isEditing ? `Edit: ${editingConfigurationId}` : "New credential type";
+          }
+          if (configFormHint) {
+            configFormHint.textContent = isEditing
+              ? "Modify the configuration and save to update."
+              : "Create ad-hoc credential types for the mock issuer. Saved under the data folder (custom configurations).";
+          }
+          if (saveConfigurationBtn) {
+            saveConfigurationBtn.textContent = isEditing ? "Update credential type" : "Save credential type";
+          }
+          if (deleteConfigurationBtn) {
+            deleteConfigurationBtn.style.display = isEditing ? "" : "none";
+          }
+        }
+
+        editConfigSelect?.addEventListener("change", () => {
+          const selectedId = editConfigSelect.value;
+          if (!selectedId) {
+            clearConfigurationForm();
+            return;
+          }
+          const cfg = configurationList.find(c => c.id === selectedId);
+          loadConfigurationIntoForm(cfg);
+        });
+
+        clearFormBtn?.addEventListener("click", clearConfigurationForm);
+
+        async function deleteConfiguration() {
+          if (!editingConfigurationId) return;
+          if (!confirm(`Are you sure you want to delete "${editingConfigurationId}"?`)) return;
+          hideConfigurationFeedback();
+          try {
+            const res = await fetch(`${builderBasePath}/configurations/${encodeURIComponent(editingConfigurationId)}`, {
+              method: "DELETE"
+            });
+            if (!res.ok && res.status !== 204) {
+              throw new Error(await res.text());
+            }
+            const deletedId = editingConfigurationId;
+            configurationList = configurationList.filter(c => c.id !== deletedId);
+            removeConfigurationOption(deletedId);
+            populateEditSelect();
+            clearConfigurationForm();
+            showConfigurationFeedback(`Deleted "${deletedId}"`, "success");
+          } catch (e) {
+            showConfigurationFeedback("Could not delete configuration: " + (e?.message || e), "error");
+          }
+        }
+
+        deleteConfigurationBtn?.addEventListener("click", deleteConfiguration);
+
+        function removeConfigurationOption(id) {
+          if (!configurationSelect) return;
+          const option = Array.from(configurationSelect.options).find(o => o.value === id);
+          if (option) {
+            configurationSelect.remove(option.index);
+          }
+        }
+
+        function updateConfigurationOption(oldId, cfg) {
+          if (!configurationSelect || !cfg) return;
+          const option = Array.from(configurationSelect.options).find(o => o.value === oldId);
+          if (option) {
+            option.value = cfg.id;
+            option.dataset.format = cfg.format || "dc+sd-jwt";
+            option.dataset.vct = cfg.vct || "";
+            const label = cfg.name || cfg.id;
+            option.textContent = cfg.format && cfg.format.toLowerCase() === "mso_mdoc" ? `${label} (mDoc)` : label;
+          } else {
+            addConfigurationOption(cfg);
+          }
+        }
+
+        populateEditSelect();
+        updateFormMode();
 
         renderNewClaimTemplates();
         const initialConfig = currentConfig();

@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.demo.oid4vp;
 
 import tools.jackson.databind.JsonNode;
@@ -9,6 +24,8 @@ import de.arbeitsagentur.keycloak.wallet.common.mdoc.MdocSelectiveDiscloser;
 import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtSelectiveDiscloser;
 import com.jayway.jsonpath.JsonPath;
 import com.jayway.jsonpath.PathNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
@@ -23,6 +40,23 @@ import java.util.stream.Collectors;
 
 @Service
 public class PresentationService {
+    private static final Logger LOG = LoggerFactory.getLogger(PresentationService.class);
+
+    /** Known DCQL root-level fields per OID4VP 1.0 / DCQL specification */
+    private static final Set<String> KNOWN_DCQL_ROOT_FIELDS = Set.of(
+            "credentials", "credential_sets"
+    );
+
+    /** Known credential-level fields in DCQL */
+    private static final Set<String> KNOWN_CREDENTIAL_FIELDS = Set.of(
+            "id", "format", "claims", "credential_set", "claim_set", "meta", "vct"
+    );
+
+    /** Known claim-level fields in DCQL */
+    private static final Set<String> KNOWN_CLAIM_FIELDS = Set.of(
+            "path", "value", "values", "id"
+    );
+
     private final CredentialStore credentialStore;
     private final ObjectMapper objectMapper;
     private final SdJwtParser sdJwtParser;
@@ -84,15 +118,135 @@ public class PresentationService {
             definitions = fallbackRequests(entries);
         }
         ensureUniqueDescriptorIds(definitions);
-        List<DescriptorOptions> options = new ArrayList<>();
+
+        // Parse root-level credential_sets to determine which credentials are alternatives
+        List<CredentialSetQuery> credentialSetsOptions = parseRootCredentialSets(dcqlQuery);
+
+        // Build matches for all credentials
+        Map<String, List<DescriptorMatch>> matchesByCredentialId = new LinkedHashMap<>();
         for (CredentialRequest definition : definitions) {
             List<MatchResult> candidates = findMatches(definition, entries);
-            if (candidates.isEmpty()) {
+            matchesByCredentialId.put(definition.id(), candidates.stream().map(MatchResult::match).toList());
+        }
+
+        // If credential_sets is present, ALL required sets must be satisfied
+        // Each set must have ONE satisfiable option
+        // Per OID4VP 1.0 spec Section 6.2
+        LOG.debug("credential_sets parsed: {} sets, matchesByCredentialId keys: {}",
+                credentialSetsOptions.size(), matchesByCredentialId.keySet());
+        if (!credentialSetsOptions.isEmpty()) {
+            Set<String> allRequiredCredIds = new HashSet<>();
+
+            for (CredentialSetQuery credentialSet : credentialSetsOptions) {
+                // Skip non-required sets (required defaults to true per spec)
+                if (!credentialSet.required()) {
+                    LOG.debug("Skipping non-required credential_set");
+                    continue;
+                }
+
+                // Find first satisfiable option in this set
+                List<String> satisfiedOption = null;
+                for (List<String> option : credentialSet.options()) {
+                    // An option is satisfied if ALL credential IDs in it have matches
+                    boolean optionSatisfied = true;
+                    for (String credId : option) {
+                        List<DescriptorMatch> matches = matchesByCredentialId.get(credId);
+                        if (matches == null || matches.isEmpty()) {
+                            optionSatisfied = false;
+                            break;
+                        }
+                    }
+                    if (optionSatisfied) {
+                        satisfiedOption = option;
+                        LOG.debug("credential_sets option satisfied: {}", option);
+                        break; // Take first satisfiable option (verifier's preference order)
+                    }
+                }
+
+                if (satisfiedOption == null) {
+                    // This required credential_set has no satisfiable option
+                    LOG.debug("Required credential_set could not be satisfied");
+                    return Optional.empty();
+                }
+
+                allRequiredCredIds.addAll(satisfiedOption);
+            }
+
+            // Build result with all credentials from all satisfied options
+            List<DescriptorOptions> options = new ArrayList<>();
+            for (String credId : allRequiredCredIds) {
+                CredentialRequest req = definitions.stream()
+                        .filter(d -> credId.equals(d.id()))
+                        .findFirst()
+                        .orElse(null);
+                if (req != null) {
+                    options.add(new DescriptorOptions(req, matchesByCredentialId.get(credId)));
+                }
+            }
+            return Optional.of(new PresentationOptions(options));
+        }
+
+        // No credential_sets - require all credentials to have matches (original behavior)
+        List<DescriptorOptions> options = new ArrayList<>();
+        for (CredentialRequest definition : definitions) {
+            List<DescriptorMatch> matches = matchesByCredentialId.get(definition.id());
+            if (matches == null || matches.isEmpty()) {
                 return Optional.empty();
             }
-            options.add(new DescriptorOptions(definition, candidates.stream().map(MatchResult::match).toList()));
+            options.add(new DescriptorOptions(definition, matches));
         }
         return Optional.of(new PresentationOptions(options));
+    }
+
+    /**
+     * Credential Set Query per OID4VP 1.0 Section 6.2.
+     * @param options Non-empty array of options, each option is a list of credential IDs
+     * @param required Whether this set is required (defaults to true per spec)
+     */
+    private record CredentialSetQuery(List<List<String>> options, boolean required) {}
+
+    private List<CredentialSetQuery> parseRootCredentialSets(String dcqlQuery) {
+        if (dcqlQuery == null || dcqlQuery.isBlank()) {
+            return List.of();
+        }
+        try {
+            JsonNode root = objectMapper.readTree(dcqlQuery);
+            JsonNode credentialSets = root.path("credential_sets");
+            if (!credentialSets.isArray()) {
+                return List.of();
+            }
+            List<CredentialSetQuery> result = new ArrayList<>();
+            for (JsonNode setNode : credentialSets) {
+                JsonNode optionsNode = setNode.path("options");
+                if (!optionsNode.isArray()) {
+                    continue;
+                }
+                List<List<String>> options = new ArrayList<>();
+                for (JsonNode optionNode : optionsNode) {
+                    if (!optionNode.isArray()) {
+                        continue;
+                    }
+                    List<String> credIds = new ArrayList<>();
+                    for (JsonNode idNode : optionNode) {
+                        if (idNode.isTextual()) {
+                            credIds.add(idNode.asText());
+                        }
+                    }
+                    if (!credIds.isEmpty()) {
+                        options.add(credIds);
+                    }
+                }
+                if (!options.isEmpty()) {
+                    // Per OID4VP 1.0: required defaults to true if omitted
+                    boolean required = !setNode.has("required") || setNode.path("required").asBoolean(true);
+                    result.add(new CredentialSetQuery(options, required));
+                }
+            }
+            return result;
+        } catch (Exception e) {
+            LOG.debug("Failed to parse credential_sets: {}", e.getMessage());
+            return List.of();
+        }
     }
 
     private List<CredentialRequest> fallbackRequests(List<CredentialStore.Entry> entries) {
@@ -117,6 +271,10 @@ public class PresentationService {
             if (!matchesFormat(definition, format)) {
                 continue;
             }
+            // Check vct_values and doctype_value from meta section
+            if (!matchesVctOrDoctype(definition, vct)) {
+                continue;
+            }
             if (!matchesCredentialSet(definition, map, vct, format)) {
                 continue;
             }
@@ -128,9 +286,26 @@ public class PresentationService {
                 continue;
             }
             Map<String, Object> disclosed = filterClaims(claims, definition.claims());
-            boolean hasRequestedClaims = definition.claims() != null && definition.claims().stream()
-                    .anyMatch(c -> c != null && c.name() != null && !c.name().isBlank());
-            if (hasRequestedClaims && (disclosed == null || disclosed.isEmpty())) {
+            // Count claims with value constraints (these are REQUIRED)
+            long constrainedClaimCount = definition.claims() != null
+                    ? definition.claims().stream()
+                        .filter(c -> c != null && c.name() != null && !c.name().isBlank()
+                                && c.constValue() != null && !c.constValue().isBlank())
+                        .count()
+                    : 0;
+            // Count all valid claim requests
+            long totalClaimCount = definition.claims() != null
+                    ? definition.claims().stream()
+                        .filter(c -> c != null && c.name() != null && !c.name().isBlank())
+                        .count()
+                    : 0;
+            boolean hasRequestedClaims = totalClaimCount > 0;
+            // If there are constrained claims, credential must have at least those
+            // If no constrained claims, at least one claim must match (to avoid showing completely irrelevant credentials)
+            long requiredCount = constrainedClaimCount > 0 ? constrainedClaimCount : (hasRequestedClaims ? 1 : 0);
+            if (hasRequestedClaims && (disclosed == null || disclosed.size() < requiredCount)) {
+                LOG.debug("Credential {} rejected: has {} of {} required claims (total requested: {})",
+                        entry.fileName(), disclosed != null ? disclosed.size() : 0, requiredCount, totalClaimCount);
                 continue;
             }
             MatchResult candidate = new MatchResult(buildMatch(definition, entry, map, disclosed), i, disclosed.size());
@@ -207,6 +382,42 @@ public class PresentationService {
         return normalized.contains("sd-jwt");
     }
 
+    /**
+     * Check if credential's vct matches the definition's vct_values or doctype_value.
+     * Per DCQL spec, meta.vct_values is for SD-JWT VC, meta.doctype_value is for mDoc.
+     */
+    private boolean matchesVctOrDoctype(CredentialRequest definition, String credentialVct) {
+        // If neither vct_values nor doctype_value is specified, match any
+        boolean hasVctConstraint = definition.vctValues() != null && !definition.vctValues().isEmpty();
+        boolean hasDoctypeConstraint = definition.doctypeValue() != null && !definition.doctypeValue().isBlank();
+
+        if (!hasVctConstraint && !hasDoctypeConstraint) {
+            return true;
+        }
+
+        if (credentialVct == null || credentialVct.isBlank()) {
+            return false;
+        }
+
+        // Check vct_values (for SD-JWT)
+        if (hasVctConstraint) {
+            for (String allowedVct : definition.vctValues()) {
+                if (credentialVct.equalsIgnoreCase(allowedVct)) {
+                    return true;
+                }
+            }
+        }
+
+        // Check doctype_value (for mDoc)
+        if (hasDoctypeConstraint) {
+            if (credentialVct.equalsIgnoreCase(definition.doctypeValue())) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private String normalizeFormat(String format) {
         if (format == null) {
             return null;
@@ -255,8 +466,36 @@ public class PresentationService {
         })
         .collect(Collectors.toSet());
         String vpToken = toVpToken(map, definition.claims(), requestedClaims);
-        return new DescriptorMatch(definition.id(), entry.fileName(), map, vpToken, definition.claims(), disclosed,
+        Map<String, Object> displayDisclosed = filterDisplayClaims(disclosed);
+        return new DescriptorMatch(definition.id(), entry.fileName(), map, vpToken, definition.claims(), displayDisclosed,
                 definition.credentialSets(), definition.claimSets());
+    }
+
+    private Map<String, Object> filterDisplayClaims(Map<String, Object> claims) {
+        if (claims == null || claims.isEmpty()) {
+            return Map.of();
+        }
+        Set<String> hidden = Set.of(
+                "iss", "aud", "exp", "nbf", "iat", "jti", "sub",
+                "azp", "nonce", "at_hash", "c_hash", "s_hash", "auth_time", "acr", "amr", "sid", "session_state",
+                "cnf", "vct", "_sd_alg", "_sd", "kid", "typ"
+        );
+        Map<String, Object> filtered = new LinkedHashMap<>();
+        claims.forEach((key, value) -> {
+            if (key == null) {
+                return;
+            }
+            for (String prefix : hidden) {
+                if (key.equals(prefix) || key.startsWith(prefix + ".")) {
+                    return;
+                }
+            }
+            if (key.startsWith("_")) {
+                return;
+            }
+            filtered.put(key, value);
+        });
+        return filtered;
     }
 
     private List<CredentialRequest> parseCredentialRequests(String dcqlQuery) {
@@ -265,27 +504,90 @@ public class PresentationService {
         }
         try {
             JsonNode root = objectMapper.readTree(dcqlQuery);
+
+            // Validate and log unknown root-level fields
+            validateAndLogUnknownFields(root, KNOWN_DCQL_ROOT_FIELDS, "DCQL root");
+
             JsonNode credentials = root.path("credentials");
             if (!credentials.isArray()) {
+                LOG.warn("DCQL query missing or invalid 'credentials' array");
                 return List.of();
             }
+
+            // Log unsupported features
+            if (root.has("credential_sets") && !root.path("credential_sets").isMissingNode()) {
+                LOG.debug("DCQL credential_sets feature detected - processing with best-effort matching");
+            }
+
             List<CredentialRequest> result = new ArrayList<>();
             for (JsonNode credentialNode : credentials) {
+                // Validate credential-level fields
+                validateAndLogUnknownFields(credentialNode, KNOWN_CREDENTIAL_FIELDS, "DCQL credential");
+
                 String id = textOrNull(credentialNode, "id");
                 if (id == null || id.isBlank()) {
                     id = "credential-%d".formatted(result.size() + 1);
                 }
                 String format = normalizeFormat(textOrNull(credentialNode, "format"));
-                List<ClaimRequest> claims = extractClaimRequestsFromDcql(credentialNode.path("claims"));
+
+                // Validate claim-level fields
+                JsonNode claimsNode = credentialNode.path("claims");
+                if (claimsNode.isArray()) {
+                    for (JsonNode claimNode : claimsNode) {
+                        if (claimNode.isObject()) {
+                            validateAndLogUnknownFields(claimNode, KNOWN_CLAIM_FIELDS, "DCQL claim in '" + id + "'");
+                            // Log unsupported 'values' constraint
+                            if (claimNode.has("values") && !claimNode.path("values").isMissingNode()) {
+                                LOG.debug("DCQL claim 'values' constraint detected in '{}' - not fully supported, using first value", id);
+                            }
+                        }
+                    }
+                }
+
+                List<ClaimRequest> claims = extractClaimRequestsFromDcql(claimsNode);
                 List<FieldConstraint> constraints = buildConstraintsFromClaims(claims);
                 List<CredentialSetFilter> credentialSets = parseCredentialSets(credentialNode.path("credential_set"));
                 List<ClaimSet> claimSets = parseClaimSets(credentialNode.path("claim_set"));
-                result.add(new CredentialRequest(id, constraints, claims, credentialSets, claimSets, format));
+
+                // Parse meta section for vct_values and doctype_value
+                JsonNode metaNode = credentialNode.path("meta");
+                List<String> vctValues = new ArrayList<>();
+                String doctypeValue = null;
+                if (!metaNode.isMissingNode() && metaNode.isObject()) {
+                    JsonNode vctValuesNode = metaNode.path("vct_values");
+                    if (vctValuesNode.isArray()) {
+                        for (JsonNode v : vctValuesNode) {
+                            if (v.isTextual()) {
+                                vctValues.add(v.asText());
+                            }
+                        }
+                    }
+                    JsonNode doctypeNode = metaNode.path("doctype_value");
+                    if (doctypeNode.isTextual()) {
+                        doctypeValue = doctypeNode.asText();
+                    }
+                }
+
+                result.add(new CredentialRequest(id, constraints, claims, credentialSets, claimSets, format, vctValues, doctypeValue));
             }
             return result;
         } catch (Exception e) {
+            LOG.warn("Failed to parse DCQL query: {}", e.getMessage());
+            LOG.debug("DCQL parse error details", e);
             return List.of();
         }
+    }
+
+    private void validateAndLogUnknownFields(JsonNode node, Set<String> knownFields, String context) {
+        if (!node.isObject()) {
+            return;
+        }
+        ((tools.jackson.databind.node.ObjectNode) node).properties().forEach(entry -> {
+            String fieldName = entry.getKey();
+            if (!knownFields.contains(fieldName)) {
+                LOG.debug("Unknown/unsupported DCQL field '{}' in {} - ignoring", fieldName, context);
+            }
+        });
     }
 
     private List<CredentialSetFilter> parseCredentialSets(JsonNode node) {
@@ -523,7 +825,7 @@ public class PresentationService {
         if (sdJwtParser.isSdJwt(rawCredential)) {
             return sdJwtSelectiveDiscloser.filter(rawCredential, toSdJwtRequests(requests), requestedClaims);
         }
-        if (mdocParser.isHex(rawCredential)) {
+        if (mdocParser.isMdoc(rawCredential)) {
             return mdocSelectiveDiscloser.filter(rawCredential, requestedClaims);
         }
         List<String> disclosures = sdJwtSelectiveDiscloser.filterDisclosures(
@@ -570,7 +872,14 @@ public class PresentationService {
                                     List<ClaimRequest> claims,
                                     List<CredentialSetFilter> credentialSets,
                                     List<ClaimSet> claimSets,
-                                    String format) {
+                                    String format,
+                                    List<String> vctValues,
+                                    String doctypeValue) {
+        // Convenience constructor for backward compatibility
+        public CredentialRequest(String id, List<FieldConstraint> constraints, List<ClaimRequest> claims,
+                                 List<CredentialSetFilter> credentialSets, List<ClaimSet> claimSets, String format) {
+            this(id, constraints, claims, credentialSets, claimSets, format, List.of(), null);
+        }
     }
 
     public record ClaimRequest(String name, String constValue, String jsonPath) {
@@ -692,7 +1001,7 @@ public class PresentationService {
                     return vctFromSdJwt;
                 }
             }
-            if (mdocParser.isHex(rawCredential)) {
+            if (mdocParser.isMdoc(rawCredential)) {
                 String docType = mdocParser.extractDocType(rawCredential);
                 if (docType != null) {
                     return docType;
@@ -737,7 +1046,7 @@ public class PresentationService {
             if (sdJwtParser.isSdJwt(rawCredential)) {
                 return "dc+sd-jwt";
             }
-            if (mdocParser.isHex(rawCredential)) {
+            if (mdocParser.isMdoc(rawCredential)) {
                 return "mso_mdoc";
             }
             return "jwt_vc";
@@ -758,7 +1067,7 @@ public class PresentationService {
             if (sdJwtParser.isSdJwt(rawCredential)) {
                 return sdJwtParser.extractDisclosedClaims(rawCredential);
             }
-            if (mdocParser.isHex(rawCredential)) {
+            if (mdocParser.isMdoc(rawCredential)) {
                 return mdocParser.extractClaims(rawCredential);
             }
             String[] parts = rawCredential.split("\\.");

@@ -4,16 +4,11 @@
     <meta charset="UTF-8" />
     <title>Verifier Result</title>
     <link rel="stylesheet" th:href="@{/css/verifier-result.css}" />
+    <link rel="stylesheet" th:href="@{/css/verification-flow.css}" />
 
   </head>
   <body>
     <div class="card">
-      <div th:if="${#lists.isEmpty(vpTokens)}" style="margin-top:1rem;">
-        <p style="font-size:1.05rem;"><strong th:text="${message}">No credential found.</strong></p>
-        <a class="btn" th:href="@{/verifier}">&larr; Back to verifier</a>
-      </div>
-
-      <div th:unless="${#lists.isEmpty(vpTokens)}">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;">
           <div>
             <h2 th:text="${title}">Verifier Result</h2>
@@ -140,6 +135,19 @@
             <h3 style="margin:0;">Verification Debug</h3>
             <button id="debug-toggle" class="btn" style="background:#1f2937;">Toggle</button>
           </div>
+          <div th:if="${verificationState != null and !#strings.isEmpty(verificationState)}" class="token-section" style="margin-top:0.75rem;background:#fff;">
+            <div class="token-header">
+              <div class="token-title">
+                <small style="color:#475569;">Flow</small>
+              </div>
+            </div>
+            <div id="verificationFlowGraph"
+                 class="flow-graph"
+                 th:attr="data-flow-api-base=@{/verifier/api/flow},data-flow-state=${verificationState}">
+              Loading flow…
+            </div>
+            <div id="verificationFlowDetails" class="flow-details" style="display:none;"></div>
+          </div>
           <div id="debug-pane" style="display:none;">
             <div th:if="${verificationDebug == null or #lists.isEmpty(verificationDebug)}"><em>No debug entries yet.</em></div>
             <div class="debug-group" th:each="groupEntry : ${verificationDebugGrouped}">
@@ -199,8 +207,8 @@
             </div>
           </div>
         </div>
-      </div>
     </div>
+    <script type="text/javascript" th:src="@{/js/verification-flow-view.js}"></script>
     <script>
       const debugToggle = document.getElementById("debug-toggle");
       const debugPane = document.getElementById("debug-pane");
@@ -208,6 +216,20 @@
         debugToggle.addEventListener("click", () => {
           debugPane.style.display = debugPane.style.display === "none" ? "block" : "none";
         });
+      }
+
+      const flowGraph = document.getElementById("verificationFlowGraph");
+      const flowDetails = document.getElementById("verificationFlowDetails");
+      if (flowGraph && globalThis.VerificationFlowView) {
+        const flowView = globalThis.VerificationFlowView.create({
+          graphEl: flowGraph,
+          detailsEl: flowDetails,
+          apiBase: flowGraph.dataset.flowApiBase,
+          state: flowGraph.dataset.flowState
+        });
+        if (flowView) {
+          flowView.refresh(true).catch(() => {});
+        }
       }
 
       let showDecrypted = true;

@@ -6,4 +6,5 @@ node_modules/
 .env
 demo-app/data/*
 !demo-app/data/.gitkeep
-
+.run/
+demo-app/demo-app/

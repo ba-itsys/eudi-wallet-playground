@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en" xmlns:th="http://www.thymeleaf.org">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OIDF Conformance Suite</title>
+    <link rel="stylesheet" th:href="@{/css/verifier.css}" />
+    <link rel="stylesheet" th:href="@{/css/verification-flow.css}" />
+  </head>
+  <body>
+    <div class="card conformance-card">
+      <div class="actions" style="justify-content: space-between;">
+        <div>
+          <h1 style="margin-bottom: 0.25rem;">OIDF Conformance Suite</h1>
+          <p style="margin:0;">Load a plan, run a test module, and inspect results.</p>
+        </div>
+        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+          <a class="btn secondary" th:href="@{/verifier}" aria-label="Back to verifier UI">Back to Verifier</a>
+          <a class="btn secondary mini" th:if="${conformancePlan != null and conformancePlan.id() != ''}"
+             th:href="${conformanceBaseUrl + '/plan-detail.html?plan=' + conformancePlan.id()}" target="_blank" rel="noreferrer">Open plan in suite</a>
+          <a class="btn secondary mini" th:if="${conformanceLastRunId != null and conformanceLastRunId != ''}"
+             th:href="${conformanceBaseUrl + '/log-detail.html?log=' + conformanceLastRunId}" target="_blank" rel="noreferrer">Open last run</a>
+        </div>
+      </div>
+
+      <div th:if="${conformanceError != null}" class="pill error" style="margin-top:0.75rem;" th:text="${conformanceError}">Error</div>
+      <div th:if="${conformanceMessage != null}" class="pill" style="margin-top:0.75rem;background:#e2e8f0;color:#0f172a;" th:text="${conformanceMessage}">Message</div>
+
+      <div class="conformance-layout">
+        <div class="conformance-left">
+		      <div class="builder">
+		        <div class="builder-header">
+		          <div>
+		            <h3 style="margin:0;">Setup &amp; plan</h3>
+		            <small style="color:#475569;">
+		              Connect to the suite, then load an existing plan or create a new one.
+		            </small>
+		          </div>
+		        </div>
+		      <form method="post" th:action="@{/verifier/conformance/load}" style="margin-top:0.5rem;">
+	        <div class="actions" style="align-items:flex-end;flex-wrap:wrap;">
+	          <div style="flex:1;min-width:260px;">
+	            <label for="conformanceBaseUrl">Conformance API base URL</label>
+	            <input id="conformanceBaseUrl" name="baseUrl" type="url" placeholder="https://demo.certification.openid.net"
+                   style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;" th:value="${conformanceBaseUrl}" />
+            <small style="color:#475569;">Suite root URL (you can also paste a URL ending in <code>/api</code>).</small>
+          </div>
+          <div style="flex:1;min-width:260px;">
+            <label for="conformanceApiKey">Conformance API key (optional)</label>
+            <input id="conformanceApiKey" name="apiKey" type="password" placeholder="Bearer token"
+                   style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;" />
+            <small style="color:#475569;" th:text="${conformanceApiKeyStatus}">API key status</small>
+          </div>
+	        </div>
+
+	        <div class="conformance-tablist" role="tablist" aria-label="Plan actions" style="margin-top:0.75rem;">
+	          <button type="button" id="conformancePlanTabLoad" class="conformance-tab active" role="tab" aria-selected="true"
+	                  aria-controls="conformancePlanPanelLoad">Load plan</button>
+	          <button type="button" id="conformancePlanTabCreate" class="conformance-tab" role="tab" aria-selected="false"
+	                  aria-controls="conformancePlanPanelCreate">Create plan</button>
+	        </div>
+
+	        <div id="conformancePlanPanelLoad" class="conformance-tabpanel" role="tabpanel" aria-labelledby="conformancePlanTabLoad">
+	          <div class="actions" style="margin-top:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+	            <div style="flex:1;min-width:260px;">
+	              <label for="conformancePlanId">Plan ID</label>
+	              <input id="conformancePlanId" name="planId" type="text" placeholder="e.g., U6JvnKLmlGACZ"
+	                     style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;"
+	                     th:value="${conformancePlan != null ? conformancePlan.id() : conformanceDefaultPlanId}" />
+	            </div>
+	            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+	              <button class="btn secondary" type="submit">Load plan</button>
+	              <button class="btn secondary" type="submit" th:formaction="@{/verifier/conformance/refresh}" formnovalidate>Refresh plan</button>
+	              <button class="btn tertiary" type="submit" th:formaction="@{/verifier/conformance/clear}" formnovalidate>Clear plan</button>
+	              <button class="btn tertiary" type="submit" th:if="${conformanceApiKeyStored}" th:formaction="@{/verifier/conformance/clear-key}" formnovalidate>Clear key</button>
+	            </div>
+	          </div>
+	        </div>
+
+	        <div id="conformancePlanPanelCreate" class="conformance-tabpanel" role="tabpanel" aria-labelledby="conformancePlanTabCreate" style="display:none;">
+	          <div class="pill" style="margin-top:0.5rem;background:#e2e8f0;color:#0f172a;">
+	            Creates a new plan in the suite and loads it into this UI.
+	          </div>
+	          <div class="actions" style="margin-top:0.75rem;align-items:flex-end;flex-wrap:wrap;">
+		            <div style="flex:1;min-width:260px;">
+		              <label for="conformanceCreatePlanName">Plan template</label>
+		              <input id="conformanceCreatePlanName" name="planName" type="text"
+		                     style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;"
+	                     th:value="${conformanceCreatePlanName}" />
+	              <small style="color:#475569;">Defaults to the OID4VP 1.0 FINAL verifier plan.</small>
+	            </div>
+	            <div style="flex:1;min-width:260px;">
+	              <label for="conformanceCreateClientIdHost">Client ID host</label>
+	              <input id="conformanceCreateClientIdHost" name="clientIdHost" type="text"
+	                     style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;"
+		                     th:value="${conformanceCreateClientIdHost}" />
+		              <small style="color:#475569;">Detected external host: <code th:text="${conformanceExternalHost}">host</code> (used for <code>x509_san_dns</code>).</small>
+		            </div>
+		          </div>
+	          <div class="actions" style="margin-top:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+	            <div style="flex:1;min-width:260px;">
+	              <label for="conformanceCreateCredentialFormat">Credential format</label>
+	              <select id="conformanceCreateCredentialFormat" name="credentialFormat"
+	                      style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
+	                <option value="sd_jwt_vc" th:selected="${conformanceCreateCredentialFormat == 'sd_jwt_vc'}">sd_jwt_vc (SD-JWT VC)</option>
+	                <option value="iso_mdl" th:selected="${conformanceCreateCredentialFormat == 'iso_mdl'}">iso_mdl (ISO mDL / mDoc)</option>
+	              </select>
+	              <small style="color:#475569;">Controls the suite plan variant (<code>credential_format</code>).</small>
+	            </div>
+	            <div style="flex:1;min-width:260px;">
+	              <label for="conformanceCreateClientIdPrefix">Client ID scheme</label>
+	              <select id="conformanceCreateClientIdPrefix" name="clientIdPrefix"
+	                      style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
+	                <option value="x509_san_dns" th:selected="${conformanceCreateClientIdPrefix == 'x509_san_dns'}">x509_san_dns</option>
+	                <option value="x509_hash" th:selected="${conformanceCreateClientIdPrefix == 'x509_hash'}">x509_hash</option>
+	              </select>
+	              <small style="color:#475569;">Controls the suite plan variant (<code>client_id_prefix</code>).</small>
+	            </div>
+	          </div>
+		          <div class="actions" style="margin-top:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+		            <div style="flex:1;min-width:260px;">
+		              <label for="conformanceCreateAlias">Alias (optional)</label>
+		              <input id="conformanceCreateAlias" name="alias" type="text" placeholder="e.g., dominik-2"
+	                     style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;" />
+	              <small style="color:#475569;">If empty, a timestamp-based alias is generated.</small>
+	            </div>
+	            <div style="flex:2;min-width:260px;">
+	              <label for="conformanceCreateDescription">Description (optional)</label>
+	              <input id="conformanceCreateDescription" name="description" type="text"
+	                     style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;" />
+	            </div>
+	            <div style="flex:1;min-width:240px;">
+	              <label for="conformanceCreatePublish">Publish results</label>
+	              <select id="conformanceCreatePublish" name="publish"
+	                      style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
+	                <option value="private" th:selected="${conformanceCreatePublish == 'private'}">private</option>
+	                <option value="public" th:selected="${conformanceCreatePublish == 'public'}">public</option>
+	              </select>
+		              <small style="color:#475569;">Public makes results visible on the suite website.</small>
+		            </div>
+		            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+		              <button class="btn secondary" type="submit" th:formaction="@{/verifier/conformance/create}" formnovalidate>+ Create plan</button>
+		            </div>
+		          </div>
+		          <small style="color:#475569;display:block;margin-top:0.5rem;">
+		            Note: the suite needs a private <code>credential.signing_jwk</code> (ES256) to mint SD-JWT test credentials; the verifier generates a dedicated key and sends it to the suite API.
+	          </small>
+	        </div>
+	      </form>
+	      </div>
+
+	      <script type="text/javascript">
+	        (function () {
+	          const tabLoad = document.getElementById("conformancePlanTabLoad");
+	          const tabCreate = document.getElementById("conformancePlanTabCreate");
+	          const panelLoad = document.getElementById("conformancePlanPanelLoad");
+	          const panelCreate = document.getElementById("conformancePlanPanelCreate");
+	          if (!tabLoad || !tabCreate || !panelLoad || !panelCreate) {
+	            return;
+	          }
+
+	          function setTabSelected(btn, selected) {
+	            btn.classList.toggle("active", selected);
+	            btn.setAttribute("aria-selected", selected ? "true" : "false");
+	            btn.tabIndex = selected ? 0 : -1;
+	          }
+
+	          function apply(tab) {
+	            const normalized = tab === "create" ? "create" : "load";
+	            setTabSelected(tabLoad, normalized === "load");
+	            setTabSelected(tabCreate, normalized === "create");
+	            panelLoad.style.display = normalized === "load" ? "block" : "none";
+	            panelCreate.style.display = normalized === "create" ? "block" : "none";
+	            try {
+	              sessionStorage.setItem("conformancePlanTab", normalized);
+	            } catch (e) {
+	            }
+	          }
+
+	          function switchFromKey(event) {
+	            if (!event) {
+	              return;
+	            }
+	            const key = event.key;
+	            if (key !== "ArrowLeft" && key !== "ArrowRight") {
+	              return;
+	            }
+	            event.preventDefault();
+	            const next = tabLoad.classList.contains("active") ? "create" : "load";
+	            apply(next);
+	            (next === "load" ? tabLoad : tabCreate).focus();
+	          }
+
+	          tabLoad.addEventListener("click", function () { apply("load"); });
+	          tabCreate.addEventListener("click", function () { apply("create"); });
+	          tabLoad.addEventListener("keydown", switchFromKey);
+	          tabCreate.addEventListener("keydown", switchFromKey);
+
+	          let initial = "load";
+	          try {
+	            const stored = sessionStorage.getItem("conformancePlanTab");
+	            if (stored) {
+	              initial = stored;
+	            }
+	          } catch (e) {
+	          }
+	          apply(initial);
+			        })();
+			      </script>
+        </div>
+
+        <div class="conformance-right">
+          <div class="builder">
+            <div class="builder-header">
+              <div>
+                <h3 style="margin:0;">Run</h3>
+                <small style="color:#475569;">
+                  Pick a module and start a run. Live updates appear below.
+                </small>
+              </div>
+            </div>
+            <div th:if="${conformancePlan != null and conformancePlan.id() != ''}">
+              <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;">
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;" th:text="'Plan: ' + ${conformancePlan.planName()}">Plan</div>
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;" th:if="${conformancePlan.alias() != ''}" th:text="'alias=' + ${conformancePlan.alias()}">alias</div>
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;" th:if="${conformancePlan.authorizationEndpoint() != ''}">
+                  <span>authorization_endpoint:</span>
+                  <a th:href="${conformancePlan.authorizationEndpoint()}" target="_blank" rel="noreferrer" th:text="${conformancePlan.authorizationEndpoint()}">auth</a>
+                </div>
+              </div>
+
+              <form method="post" th:action="@{/verifier/conformance/run}" style="margin-top:0.75rem;">
+                <input type="hidden" name="planId" th:value="${conformancePlan.id()}" />
+                <div class="actions" style="align-items:flex-end;flex-wrap:wrap;">
+                  <div style="flex:1;min-width:260px;">
+                    <label for="conformanceModule">Test module</label>
+                    <select id="conformanceModule" name="module" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
+                      <option th:each="module : ${conformancePlan.modules()}" th:value="${module.testModule()}" th:text="${module.testModule()}">module</option>
+                    </select>
+                    <small style="color:#475569;">Starts a new run via the suite API (<code>/api/runner</code>).</small>
+                  </div>
+                  <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+                    <button class="btn primary" type="submit">▶ Run</button>
+                  </div>
+                </div>
+              </form>
+
+              <details style="margin-top:0.75rem;" th:if="${conformancePlan.modules() != null and !#lists.isEmpty(conformancePlan.modules())}">
+                <summary>Module results</summary>
+                <div th:each="module : ${conformancePlan.modules()}" style="margin-top:0.75rem;">
+                  <div style="display:flex;gap:0.75rem;flex-wrap:wrap;align-items:center;">
+                    <div class="chip" style="background:#e2e8f0;color:#0f172a;" th:text="${module.testModule()}">module</div>
+                    <div class="chip" style="background:#e2e8f0;color:#0f172a;" th:text="${#lists.size(module.instances())} + ' runs'">0 runs</div>
+                  </div>
+                  <div style="margin-top:0.5rem;" th:if="${module.testSummary() != ''}" th:text="${module.testSummary()}">Summary</div>
+                  <div style="margin-top:0.5rem;" th:if="${module.instances() != null and !#lists.isEmpty(module.instances())}">
+                    <table style="width:100%;border-collapse:collapse;">
+                      <thead>
+                        <tr>
+                          <th style="text-align:left;padding:0.35rem 0.25rem;">Run ID</th>
+                          <th style="text-align:left;padding:0.35rem 0.25rem;">Status</th>
+                          <th style="text-align:left;padding:0.35rem 0.25rem;">Result</th>
+                          <th style="text-align:left;padding:0.35rem 0.25rem;">Started</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        <tr th:each="instance : ${module.instances()}">
+                          <td style="padding:0.35rem 0.25rem;">
+                            <a th:href="${conformanceBaseUrl + '/log-detail.html?log=' + instance.get('id')}" target="_blank" rel="noreferrer"
+                               th:text="${instance.get('id')}">id</a>
+                          </td>
+                          <td style="padding:0.35rem 0.25rem;" th:text="${instance.getOrDefault('status','')}">status</td>
+                          <td style="padding:0.35rem 0.25rem;" th:text="${instance.getOrDefault('result','')}">result</td>
+                          <td style="padding:0.35rem 0.25rem;" th:text="${instance.getOrDefault('started','')}">started</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                  <details style="margin-top:0.5rem;">
+                    <summary>Raw module JSON</summary>
+                    <pre class="http-body" style="margin:0;" th:text="${module.rawJson()}"></pre>
+                  </details>
+                </div>
+                <details style="margin-top:0.75rem;">
+                  <summary>Raw plan JSON</summary>
+                  <pre class="http-body" style="margin:0;" th:text="${conformancePlan.rawJson()}"></pre>
+                </details>
+              </details>
+            </div>
+            <div th:unless="${conformancePlan != null and conformancePlan.id() != ''}">
+              <div class="pill" style="margin-top:0.75rem;background:#e2e8f0;color:#0f172a;">
+                No plan loaded yet. Load a plan (or create one) on the left to enable running modules.
+              </div>
+            </div>
+          </div>
+
+          <div class="builder conformance-live">
+            <div class="builder-header">
+              <div>
+                <h3 style="margin:0;">Live run</h3>
+                <small style="color:#475569;">Follow the suite run log and the verifier flow while it runs.</small>
+              </div>
+              <div th:if="${conformanceLastRunId != null and conformanceLastRunId != ''}" class="actions">
+                <button type="button" class="btn secondary mini" id="conformanceRefreshNow">Refresh now</button>
+              </div>
+            </div>
+
+            <div th:unless="${conformanceLastRunId != null and conformanceLastRunId != ''}">
+              <div class="pill" style="margin-top:0.5rem;background:#e2e8f0;color:#0f172a;">
+                No run started yet. Start a run above to see logs and results here.
+              </div>
+            </div>
+
+            <div th:if="${conformanceLastRunId != null and conformanceLastRunId != ''}" style="margin-top:0.5rem;">
+              <div class="actions" style="gap:0.5rem;">
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;">runId=<span id="conformanceRunId" th:text="${conformanceLastRunId}">id</span></div>
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;">status=<span id="conformanceRunStatus">…</span></div>
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;">result=<span id="conformanceRunResult">…</span></div>
+                <div class="chip" style="background:#e2e8f0;color:#0f172a;">updated=<span id="conformanceRunUpdated">…</span></div>
+              </div>
+
+              <div id="conformanceLiveError" class="pill error" style="margin-top:0.5rem;display:none;">Error</div>
+              <div id="conformanceLiveHint" class="pill" style="margin-top:0.5rem;background:#e2e8f0;color:#0f172a;display:none;">Hint</div>
+
+              <div th:if="${conformanceLastAuthEndpoint != null and conformanceLastAuthEndpoint != ''}"
+                   class="builder" style="margin-top:0.75rem;">
+                <div class="builder-header">
+                  <div>
+                    <h3 style="margin:0;">Verifier flow</h3>
+                    <small style="color:#475569;">
+                      When the suite switches to <code>WAITING</code>, this page automatically triggers the verifier request. Use <strong>Restart</strong> if you need to retry.
+                    </small>
+                  </div>
+                </div>
+                <div class="actions" style="margin-top:0.5rem;align-items:flex-end;flex-wrap:wrap;">
+                  <div style="flex:1;min-width:260px;">
+                    <label for="conformanceAuthEndpoint">Wallet authorization endpoint (this run)</label>
+                    <input id="conformanceAuthEndpoint" type="text" readonly
+                           style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;"
+                           th:value="${conformanceLastAuthEndpoint}" />
+                    <small style="color:#475569;">
+                      Verifier public URL: <code th:text="${conformanceExternalBaseUrl}">base</code>
+                    </small>
+                  </div>
+                  <button type="button" class="btn tertiary mini" id="conformanceCopyAuthEndpoint">Copy</button>
+                  <button type="button" class="btn mini" id="conformanceStartFlowNow">Restart</button>
+                </div>
+              </div>
+
+              <div class="conformance-tablist" role="tablist" aria-label="Live run view" style="margin-top:0.75rem;">
+                <button type="button" id="conformanceTabLog" class="conformance-tab active" role="tab" aria-selected="true"
+                        aria-controls="conformanceTabPanelLog">Log</button>
+                <button type="button" id="conformanceTabFlow" class="conformance-tab" role="tab" aria-selected="false"
+                        aria-controls="conformanceTabPanelFlow">Flow</button>
+              </div>
+
+              <div id="conformanceTabPanelLog" class="conformance-tabpanel" role="tabpanel" aria-labelledby="conformanceTabLog">
+                <div id="conformanceLog" class="log-stream" style="margin-top:0.5rem;font-size:0.75rem;"
+                     th:attr="data-run-id=${conformanceLastRunId},data-api-base=@{/verifier/conformance/api},data-start-flow-url=@{/verifier/conformance/start-flow},data-flow-api-base=@{/verifier/api/flow},data-flow-state=${conformanceLastState}"></div>
+              </div>
+
+              <div id="conformanceTabPanelFlow" class="conformance-tabpanel" role="tabpanel" aria-labelledby="conformanceTabFlow" style="display:none;">
+                <div class="builder" style="margin-top:0.5rem;">
+                  <div class="builder-header">
+                    <div>
+                      <h3 style="margin:0;">Flow</h3>
+                      <small style="color:#475569;">Click a step to inspect request/response details (includes tokens and parameters).</small>
+                    </div>
+                  </div>
+                  <div id="conformanceFlowGraph" class="flow-graph">Flow events appear once the verifier starts.</div>
+                  <div id="conformanceFlowDetails" class="flow-details" style="display:none;"></div>
+                </div>
+              </div>
+
+              <details style="margin-top:0.75rem;">
+                <summary>Test instructions</summary>
+                <pre class="http-body" style="margin:0;" id="conformanceRunSummary"></pre>
+              </details>
+            </div>
+          </div>
+        </div>
+      </div>
+		    </div>
+          <script type="text/javascript" th:src="@{/js/verification-flow-view.js}"></script>
+			    <script type="text/javascript">
+		      (function () {
+		        const logContainer = document.getElementById("conformanceLog");
+	        if (!logContainer) {
+	          return;
+	        }
+
+		        const runId = logContainer.dataset.runId;
+		        const apiBase = logContainer.dataset.apiBase || "/verifier/conformance/api";
+		        const flowApiBase = logContainer.dataset.flowApiBase || "/verifier/api/flow";
+		        const startFlowUrl = logContainer.dataset.startFlowUrl;
+	        const statusEl = document.getElementById("conformanceRunStatus");
+	        const resultEl = document.getElementById("conformanceRunResult");
+	        const updatedEl = document.getElementById("conformanceRunUpdated");
+	        const errorEl = document.getElementById("conformanceLiveError");
+	        const hintEl = document.getElementById("conformanceLiveHint");
+		        const authEndpointInput = document.getElementById("conformanceAuthEndpoint");
+		        const copyAuthEndpointBtn = document.getElementById("conformanceCopyAuthEndpoint");
+		        const startFlowBtn = document.getElementById("conformanceStartFlowNow");
+		        const refreshNowBtn = document.getElementById("conformanceRefreshNow");
+			        const summaryEl = document.getElementById("conformanceRunSummary");
+			        const flowGraphEl = document.getElementById("conformanceFlowGraph");
+			        const flowDetailsEl = document.getElementById("conformanceFlowDetails");
+			        const tabFlowBtn = document.getElementById("conformanceTabFlow");
+			        const tabLogBtn = document.getElementById("conformanceTabLog");
+			        const tabPanelFlow = document.getElementById("conformanceTabPanelFlow");
+			        const tabPanelLog = document.getElementById("conformanceTabPanelLog");
+
+			        let since = 0;
+			        let pollMs = 1500;
+			        let autoScroll = true;
+			        let pollingEnabled = true;
+			        let activeTab = "log";
+			        let lastStatus = "";
+		        let startFlowInFlight = false;
+		        let flowStarted = false;
+		        let flowState = logContainer.dataset.flowState ? String(logContainer.dataset.flowState) : "";
+		        const flowView = globalThis.VerificationFlowView && flowGraphEl
+		          ? globalThis.VerificationFlowView.create({
+		              graphEl: flowGraphEl,
+		              detailsEl: flowDetailsEl,
+		              apiBase: flowApiBase,
+		              state: flowState
+		            })
+		          : null;
+		        let autoStartAttempts = 0;
+		        let nextAutoStartAt = 0;
+		        const seenEntryIds = new Set();
+		        const maxLogLines = 600;
+
+	        function setError(message) {
+	          if (!errorEl) {
+	            return;
+	          }
+	          if (!message) {
+	            errorEl.style.display = "none";
+	            errorEl.textContent = "";
+	            return;
+	          }
+	          errorEl.style.display = "inline-block";
+	          errorEl.textContent = message;
+	        }
+
+	        function setHint(message) {
+	          if (!hintEl) {
+	            return;
+	          }
+	          if (!message) {
+	            hintEl.style.display = "none";
+	            hintEl.textContent = "";
+	            return;
+	          }
+	          hintEl.style.display = "inline-block";
+	          hintEl.textContent = message;
+	        }
+
+	        function escapeText(value) {
+	          if (value === null || value === undefined) {
+	            return "";
+	          }
+	          return String(value);
+	        }
+
+	        function initTabs() {
+	          if (!tabFlowBtn || !tabLogBtn || !tabPanelFlow || !tabPanelLog) {
+	            return;
+	          }
+
+	          function setTabSelected(btn, selected) {
+	            btn.classList.toggle("active", selected);
+	            btn.setAttribute("aria-selected", selected ? "true" : "false");
+	            btn.tabIndex = selected ? 0 : -1;
+	          }
+
+	          function setPanelVisible(panel, visible) {
+	            panel.style.display = visible ? "block" : "none";
+	          }
+
+	          function applyTab(next) {
+	            const normalized = next === "log" ? "log" : "flow";
+	            activeTab = normalized;
+	            setTabSelected(tabFlowBtn, normalized === "flow");
+	            setTabSelected(tabLogBtn, normalized === "log");
+	            setPanelVisible(tabPanelFlow, normalized === "flow");
+	            setPanelVisible(tabPanelLog, normalized === "log");
+	            if (normalized === "log" && autoScroll && logContainer) {
+	              logContainer.scrollTop = logContainer.scrollHeight;
+	            }
+	            try {
+	              sessionStorage.setItem("conformanceLiveTab", normalized);
+	            } catch (e) {
+	            }
+	          }
+
+	          function switchTabFromKey(event) {
+	            if (!event) {
+	              return;
+	            }
+	            const key = event.key;
+	            if (key !== "ArrowLeft" && key !== "ArrowRight") {
+	              return;
+	            }
+	            event.preventDefault();
+	            const next = activeTab === "flow" ? "log" : "flow";
+	            applyTab(next);
+	            const btn = next === "flow" ? tabFlowBtn : tabLogBtn;
+	            if (btn) {
+	              btn.focus();
+	            }
+	          }
+
+	          tabFlowBtn.addEventListener("click", function () { applyTab("flow"); });
+	          tabLogBtn.addEventListener("click", function () { applyTab("log"); });
+	          tabFlowBtn.addEventListener("keydown", switchTabFromKey);
+	          tabLogBtn.addEventListener("keydown", switchTabFromKey);
+
+		          let initial = "log";
+	          try {
+	            const stored = sessionStorage.getItem("conformanceLiveTab");
+	            if (stored) {
+	              initial = stored;
+	            }
+	          } catch (e) {
+	          }
+	          applyTab(initial);
+	        }
+
+	        function firstValue(obj, keys) {
+	          if (!obj) {
+	            return "";
+	          }
+	          for (const key of keys) {
+	            const value = obj[key];
+	            const text = escapeText(value);
+	            if (text && text.trim()) {
+	              return text;
+	            }
+	          }
+	          return "";
+	        }
+
+	        function copyText(text) {
+	          const value = escapeText(text).trim();
+	          if (!value) {
+	            return Promise.reject(new Error("Nothing to copy"));
+	          }
+	          if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+	            return navigator.clipboard.writeText(value);
+	          }
+	          if (authEndpointInput && typeof authEndpointInput.select === "function") {
+	            authEndpointInput.focus();
+	            authEndpointInput.select();
+	            try {
+	              document.execCommand("copy");
+	              return Promise.resolve();
+	            } catch (e) {
+	              return Promise.reject(e);
+	            }
+	          }
+	          return Promise.reject(new Error("Clipboard API not available"));
+	        }
+
+			        async function fetchJson(url, init) {
+			          const requestInit = init || {};
+			          const requestHeaders = Object.assign({}, requestInit.headers || {}, { Accept: "application/json" });
+			          const response = await fetch(url, Object.assign({}, requestInit, { headers: requestHeaders, cache: "no-store", credentials: "same-origin" }));
+			          const text = await response.text();
+		          let data = null;
+		          try {
+	            data = text ? JSON.parse(text) : null;
+	          } catch (e) {
+	            data = null;
+	          }
+	          if (!response.ok) {
+	            const message = data && data.error ? data.error : (text || response.statusText);
+	            const err = new Error(message);
+	            err.data = data;
+	            err.status = response.status;
+	            throw err;
+	          }
+				          return data;
+				        }
+
+		        function isSkippedEvaluation(entry) {
+		          const msg = entry && entry.msg ? String(entry.msg) : "";
+		          return msg.includes("Skipped evaluation due to missing required element:");
+		        }
+
+		        function classifyResult(result) {
+		          const r = (result || "").toUpperCase();
+		          if (r === "SUCCESS" || r === "PASSED") return "success";
+	          if (r === "WARNING" || r === "REVIEW") return "warning";
+	          if (r === "INTERRUPTED" || r === "FAILURE" || r === "FAILED" || r === "ERROR") return "error";
+	          if (r === "SKIPPED") return "muted";
+	          if (r === "INFO") return "info";
+		          return "neutral";
+		        }
+
+		        const skippedEvaluationTipText =
+		          "OIDF suite: this check is skipped because an optional element is not present in this run (not a verifier error).";
+		        let tooltipEl = null;
+		        let tooltipAnchor = null;
+
+		        function ensureTooltipEl() {
+		          if (tooltipEl) {
+		            return tooltipEl;
+		          }
+		          tooltipEl = document.createElement("div");
+		          tooltipEl.className = "log-tooltip";
+		          tooltipEl.style.display = "none";
+		          document.body.appendChild(tooltipEl);
+		          return tooltipEl;
+		        }
+
+		        function hideTooltip() {
+		          tooltipAnchor = null;
+		          if (tooltipEl) {
+		            tooltipEl.style.display = "none";
+		          }
+		        }
+
+		        function positionTooltip() {
+		          if (!tooltipEl || !tooltipAnchor) {
+		            return;
+		          }
+		          const anchorRect = tooltipAnchor.getBoundingClientRect();
+		          const tipRect = tooltipEl.getBoundingClientRect();
+		          const margin = 8;
+
+		          let top = anchorRect.top - tipRect.height - margin;
+		          if (top < margin) {
+		            top = anchorRect.bottom + margin;
+		          }
+
+		          let left = anchorRect.left + anchorRect.width / 2 - tipRect.width / 2;
+		          left = Math.max(margin, Math.min(left, window.innerWidth - tipRect.width - margin));
+
+		          tooltipEl.style.top = `${Math.round(top)}px`;
+		          tooltipEl.style.left = `${Math.round(left)}px`;
+		        }
+
+		        function showTooltip(anchor, text) {
+		          tooltipAnchor = anchor;
+		          const el = ensureTooltipEl();
+		          el.textContent = text;
+		          el.style.display = "block";
+		          positionTooltip();
+		        }
+
+		        window.addEventListener("resize", positionTooltip);
+		        window.addEventListener("scroll", hideTooltip, true);
+		        async function refreshFlow(force) {
+		          if (!flowView) {
+		            return;
+		          }
+		          try {
+		            flowView.setState(flowState);
+		            await flowView.refresh(Boolean(force));
+		          } catch (e) {
+		            // Keep the flow graph visible, but don't interfere with the main run status/error display.
+		          }
+		        }
+
+		        function appendLogEntries(entries) {
+			          if (!Array.isArray(entries) || entries.length === 0) {
+			            return;
+			          }
+	          if (logContainer.childNodes.length === 1 && logContainer.firstChild.nodeType === Node.TEXT_NODE) {
+	            logContainer.textContent = "";
+	          }
+	          for (const entry of entries) {
+	            const entryId = entry && entry._id ? String(entry._id) : "";
+	            if (entryId && seenEntryIds.has(entryId)) {
+	              continue;
+	            }
+            if (entryId) {
+              seenEntryIds.add(entryId);
+            }
+		            const time = entry && typeof entry.time === "number" ? entry.time : null;
+		            if (time !== null && time > since) {
+		              since = time;
+		            }
+
+		            const line = document.createElement("div");
+		            line.className = "log-line " + classifyResult(entry && entry.result);
+
+            const timeEl = document.createElement("div");
+            timeEl.className = "log-time";
+            timeEl.textContent = time ? new Date(time).toLocaleTimeString() : "";
+
+            const srcEl = document.createElement("div");
+            srcEl.className = "log-src";
+            srcEl.title = escapeText(entry && entry.src);
+            srcEl.textContent = escapeText(entry && entry.src);
+
+	            const msgEl = document.createElement("div");
+	            msgEl.className = "log-msg";
+	            msgEl.textContent = escapeText(entry && entry.msg);
+	                if (isSkippedEvaluation(entry)) {
+	                  const tip = document.createElement("span");
+	                  tip.className = "log-tip";
+	                  tip.textContent = "?";
+	                  tip.title = skippedEvaluationTipText;
+	                  tip.setAttribute("aria-label", skippedEvaluationTipText);
+	                  tip.tabIndex = 0;
+	                  tip.addEventListener("mouseenter", function () {
+	                    showTooltip(tip, skippedEvaluationTipText);
+	                  });
+	                  tip.addEventListener("mouseleave", hideTooltip);
+	                  tip.addEventListener("focus", function () {
+	                    showTooltip(tip, skippedEvaluationTipText);
+	                  });
+	                  tip.addEventListener("blur", hideTooltip);
+	                  msgEl.appendChild(document.createTextNode(" "));
+	                  msgEl.appendChild(tip);
+	                }
+
+		            line.appendChild(timeEl);
+		            line.appendChild(srcEl);
+		            line.appendChild(msgEl);
+            logContainer.appendChild(line);
+          }
+
+          while (logContainer.children.length > maxLogLines) {
+            logContainer.removeChild(logContainer.firstChild);
+          }
+
+          if (autoScroll) {
+            logContainer.scrollTop = logContainer.scrollHeight;
+	          }
+	        }
+
+	        async function refreshOnce() {
+	          if (!runId) {
+	            return;
+	          }
+	          let infoError = null;
+	          let logError = null;
+	          let status = "";
+	          let result = "";
+
+	          try {
+	            const info = await fetchJson(`${apiBase}/info/${encodeURIComponent(runId)}`);
+	            status = firstValue(info, ["status", "testStatus", "state"]);
+	            result = firstValue(info, ["result", "testResult", "overallResult"]);
+	            statusEl.textContent = status || "…";
+	            resultEl.textContent = result || "…";
+	            updatedEl.textContent = new Date().toLocaleTimeString();
+	            if (summaryEl) {
+	              summaryEl.textContent = firstValue(info, ["summary", "testSummary", "description"]);
+	            }
+	            if (status && status !== lastStatus) {
+	              lastStatus = status;
+	              if (status === "FINISHED" || status === "INTERRUPTED") {
+	                pollMs = 5000;
+	              }
+	            }
+	          } catch (e) {
+	            infoError = e && e.message ? e.message : String(e);
+	          }
+
+	          try {
+	            const sinceQuery = since > 0 ? Math.max(0, since - 1) : 0;
+	            const url = `${apiBase}/log/${encodeURIComponent(runId)}` + (sinceQuery > 0 ? `?since=${encodeURIComponent(sinceQuery)}` : "");
+	            const entries = await fetchJson(url);
+	            appendLogEntries(entries);
+	          } catch (e) {
+	            logError = e && e.message ? e.message : String(e);
+		          }
+
+		          setError(infoError || logError);
+		          refreshFlow(false);
+
+		          const statusUpper = (status || "").toUpperCase();
+		          if (statusUpper === "WAITING") {
+		            maybeStartFlowAutomatically();
+		            if (!flowStarted && !startFlowInFlight) {
+		              setHint("Suite is waiting for the verifier request. Use “Restart” if you need to retry.");
+		            }
+		          } else if (statusUpper === "FINISHED" || statusUpper === "INTERRUPTED") {
+		            const resultUpper = (result || "").toUpperCase();
+		            autoScroll = false;
+		            pollingEnabled = false;
+		            refreshFlow(true);
+		            setHint(resultUpper ? `Run finished: ${resultUpper}. Auto-refresh paused.` : "Run finished. Auto-refresh paused.");
+		            flowStarted = true;
+		          } else {
+		            setHint(null);
+		          }
+		        }
+
+	        function setStartFlowUiBusy(isBusy) {
+	          if (!startFlowBtn) {
+	            return;
+	          }
+	          startFlowBtn.disabled = Boolean(isBusy);
+	          startFlowBtn.textContent = isBusy ? "Restarting…" : "Restart";
+	        }
+
+	        function maybeStartFlowAutomatically() {
+	          if (flowStarted) {
+	            return;
+	          }
+	          if (!startFlowUrl) {
+	            return;
+	          }
+	          if (startFlowInFlight) {
+	            return;
+	          }
+	          const now = Date.now();
+	          if (now < nextAutoStartAt) {
+	            return;
+	          }
+	          if (autoStartAttempts >= 3) {
+	            return;
+	          }
+	          autoStartAttempts += 1;
+	          startFlow("auto");
+	        }
+
+	        async function startFlow(trigger) {
+	          if (!startFlowUrl) {
+	            setError("Missing start-flow endpoint URL");
+	            return;
+	          }
+	          if (startFlowInFlight) {
+	            return;
+	          }
+	          const url = trigger === "manual"
+	            ? startFlowUrl + (startFlowUrl.indexOf("?") >= 0 ? "&" : "?") + "force=true"
+	            : startFlowUrl;
+	          startFlowInFlight = true;
+	          setStartFlowUiBusy(true);
+	          setError(null);
+	          setHint(trigger === "auto" ? "Auto-starting verifier flow…" : "Restarting verifier flow…");
+	          try {
+	            const response = await fetchJson(url, { method: "POST" });
+	            if (response && response.alreadyStarted) {
+	              flowStarted = true;
+	              setHint("Verifier flow already started for this run.");
+	              return;
+	            }
+		            if (response && response.started) {
+		              flowStarted = true;
+			              if (response.state) {
+			                flowState = String(response.state);
+			                logContainer.dataset.flowState = flowState;
+			                refreshFlow(true);
+			              }
+		              const status = response.walletAuthStatus ? ` (wallet auth HTTP ${response.walletAuthStatus})` : "";
+		              setHint("Verifier flow started" + status + ".");
+		              return;
+		            }
+	            setHint("Verifier flow request sent.");
+		          } catch (e) {
+		            const message = e && e.message ? e.message : String(e);
+			            if (e && e.data && e.data.state) {
+			              flowState = String(e.data.state);
+			              logContainer.dataset.flowState = flowState;
+			              refreshFlow(true);
+			            }
+		            setError(message);
+		            if (trigger === "auto") {
+		              nextAutoStartAt = Date.now() + 12_000;
+		              setHint("Auto-start failed. Fix the error above or click “Restart” to retry.");
+	            } else {
+	              setHint("Start failed. Fix the error above and try again.");
+	            }
+	          } finally {
+	            startFlowInFlight = false;
+	            setStartFlowUiBusy(false);
+	          }
+	        }
+
+	        function scheduleLoop() {
+	          refreshOnce().finally(function () {
+	            if (!pollingEnabled) {
+	              return;
+	            }
+	            setTimeout(scheduleLoop, pollMs);
+	          });
+	        }
+
+		        logContainer.addEventListener("scroll", function () {
+		          hideTooltip();
+		        });
+
+	        refreshNowBtn.addEventListener("click", function () {
+	          refreshOnce();
+	        });
+
+		        if (!logContainer.textContent || !logContainer.textContent.trim()) {
+		          logContainer.textContent = "Waiting for suite log…";
+		        }
+
+		        initTabs();
+
+		        if (copyAuthEndpointBtn && authEndpointInput) {
+		          copyAuthEndpointBtn.addEventListener("click", function () {
+		            copyText(authEndpointInput.value || "")
+		              .then(function () {
+	                setHint("Copied wallet authorization endpoint.");
+	                setTimeout(function () {
+	                  setHint(null);
+	                }, 1800);
+	              })
+	              .catch(function (e) {
+	                setHint(e && e.message ? e.message : "Copy failed");
+	                setTimeout(function () {
+	                  setHint(null);
+	                }, 2200);
+	              });
+	          });
+	        }
+
+	        if (startFlowBtn) {
+	          startFlowBtn.addEventListener("click", function () {
+	            startFlow("manual");
+	          });
+	        }
+
+	        scheduleLoop();
+	      })();
+	    </script>
+	  </body>
+	</html>

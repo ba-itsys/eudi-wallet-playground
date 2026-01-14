@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.verification.service;
 
 import tools.jackson.databind.JsonNode;
@@ -6,10 +21,14 @@ import com.nimbusds.jose.JWEObject;
 import de.arbeitsagentur.keycloak.wallet.common.mdoc.MdocViewer;
 import org.springframework.stereotype.Service;
 import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtParser;
+import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtUtils;
 
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Objects;
 import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 @Service
 public class TokenViewService {
@@ -108,9 +127,23 @@ public class TokenViewService {
 
     public String assembleDecodedForDebug(String vpTokensJson, String keyBindingToken, String dpopToken) {
         StringBuilder sb = new StringBuilder();
-        String vpDecoded = decodeJwtLike(vpTokensJson);
-        if (vpDecoded != null && !vpDecoded.isBlank()) {
-            sb.append("vp_token:\n").append(vpDecoded);
+        List<String> vpTokens = parsePossibleTokenList(vpTokensJson);
+        int tokenIndex = 0;
+        for (String token : vpTokens) {
+            String decoded = decodeVpTokenForDebug(token);
+            if (decoded == null || decoded.isBlank()) {
+                continue;
+            }
+            if (!sb.isEmpty()) {
+                sb.append("\n\n");
+            }
+            tokenIndex++;
+            if (vpTokens.size() > 1) {
+                sb.append("vp_token[").append(tokenIndex).append("]:\n");
+            } else {
+                sb.append("vp_token:\n");
+            }
+            sb.append(decoded);
         }
         String kbDecoded = decodeJwtLike(keyBindingToken);
         if (kbDecoded != null && !kbDecoded.isBlank()) {
@@ -127,6 +160,198 @@ public class TokenViewService {
             sb.append("dpop:\n").append(dpopDecoded);
         }
         return sb.toString();
+    }
+
+    private List<String> parsePossibleTokenList(String value) {
+        if (value == null || value.isBlank()) {
+            return List.of();
+        }
+        String trimmed = value.trim();
+        if (!trimmed.startsWith("[")) {
+            return List.of(trimmed);
+        }
+        try {
+            JsonNode node = objectMapper.readTree(trimmed);
+            if (!node.isArray()) {
+                return List.of(trimmed);
+            }
+            List<String> tokens = new ArrayList<>();
+            for (JsonNode item : node) {
+                if (item == null || item.isNull()) {
+                    continue;
+                }
+                String token = item.isTextual() ? item.asText() : item.toString();
+                if (token != null && !token.isBlank()) {
+                    tokens.add(token);
+                }
+            }
+            return tokens;
+        } catch (Exception e) {
+            return List.of(trimmed);
+        }
+    }
+
+    private String decodeVpTokenForDebug(String token) {
+        String presented = presentableToken(token);
+        if (presented == null || presented.isBlank()) {
+            return "";
+        }
+
+        if (!sdJwtParser.isSdJwt(presented)) {
+            return decodeJwtLike(presented);
+        }
+
+        StringBuilder sb = new StringBuilder();
+        SdJwtUtils.SdJwtParts parts = sdJwtParser.split(presented);
+        String jwtPayload = decodeJwtLike(parts.signedJwt());
+        if (jwtPayload != null && !jwtPayload.isBlank()) {
+            sb.append("credential_jwt_payload:\n").append(jwtPayload);
+        }
+
+        Map<String, Object> disclosedClaims = sdJwtParser.extractDisclosedClaims(parts);
+
+        List<Map<String, Object>> decodedDisclosures = decodeDisclosures(parts.disclosures(), disclosedClaims);
+        if (!decodedDisclosures.isEmpty()) {
+            if (!sb.isEmpty()) {
+                sb.append("\n\n");
+            }
+            sb.append("disclosures:\n").append(prettyJson(decodedDisclosures));
+        }
+
+        if (disclosedClaims != null && !disclosedClaims.isEmpty()) {
+            if (!sb.isEmpty()) {
+                sb.append("\n\n");
+            }
+            sb.append("disclosed_claims:\n").append(prettyJson(disclosedClaims));
+        }
+
+        if (parts.keyBindingJwt() != null && !parts.keyBindingJwt().isBlank()) {
+            String kbPayload = decodeJwtLike(parts.keyBindingJwt());
+            if (kbPayload != null && !kbPayload.isBlank()) {
+                if (!sb.isEmpty()) {
+                    sb.append("\n\n");
+                }
+                sb.append("sd_jwt_key_binding_jwt:\n").append(kbPayload);
+            }
+        }
+
+        return sb.toString();
+    }
+
+    private List<Map<String, Object>> decodeDisclosures(List<String> disclosures, Map<String, Object> disclosedClaims) {
+        if (disclosures == null || disclosures.isEmpty()) {
+            return List.of();
+        }
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (String raw : disclosures) {
+            if (raw == null || raw.isBlank()) {
+                continue;
+            }
+            try {
+                Map<String, Object> entry = new LinkedHashMap<>();
+                entry.put("disclosure", raw);
+
+                JsonNode decoded = decodeDisclosureJson(raw);
+                if (decoded != null && decoded.isArray() && decoded.size() >= 2) {
+                    entry.put("salt", decoded.get(0).asText(null));
+                    if (decoded.size() >= 3) {
+                        String claimName = decoded.get(1).asText(null);
+                        entry.put("claim_name", claimName);
+                        entry.put("claim_value", normalizeJsonStringValue(convertJsonValue(decoded.get(2))));
+                        maybeAddResolvedClaimValue(entry, claimName, disclosedClaims);
+                    } else {
+                        entry.put("claim_name", null);
+                        entry.put("claim_value", normalizeJsonStringValue(convertJsonValue(decoded.get(1))));
+                    }
+                } else {
+                    entry.put("claim_name", null);
+                    entry.put("claim_value", raw);
+                }
+                out.add(entry);
+            } catch (Exception e) {
+                out.add(Map.of("disclosure", raw));
+            }
+        }
+        return out;
+    }
+
+    private void maybeAddResolvedClaimValue(Map<String, Object> entry, String claimName, Map<String, Object> disclosedClaims) {
+        if (entry == null || claimName == null || claimName.isBlank() || disclosedClaims == null || disclosedClaims.isEmpty()) {
+            return;
+        }
+        Object resolved = disclosedClaims.get(claimName);
+        if (resolved == null) {
+            return;
+        }
+        Object current = entry.get("claim_value");
+        if (!Objects.equals(current, resolved)) {
+            entry.put("resolved_claim_value", resolved);
+        }
+    }
+
+    private Object convertJsonValue(JsonNode node) {
+        if (node == null || node.isNull() || node.isMissingNode()) {
+            return null;
+        }
+        try {
+            return objectMapper.convertValue(node, Object.class);
+        } catch (Exception e) {
+            return node.toString();
+        }
+    }
+
+    private JsonNode decodeDisclosureJson(String disclosure) {
+        if (disclosure == null || disclosure.isBlank()) {
+            return null;
+        }
+        try {
+            byte[] bytes = base64UrlDecode(disclosure.trim());
+            return objectMapper.readTree(bytes);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private byte[] base64UrlDecode(String value) {
+        if (value == null || value.isBlank()) {
+            return new byte[0];
+        }
+        String trimmed = value.trim();
+        int remainder = trimmed.length() % 4;
+        if (remainder != 0) {
+            trimmed = trimmed + "====".substring(0, 4 - remainder);
+        }
+        return Base64.getUrlDecoder().decode(trimmed);
+    }
+
+    private Object normalizeJsonStringValue(Object value) {
+        if (!(value instanceof String text)) {
+            return value;
+        }
+        String trimmed = text.trim();
+        if (trimmed.isBlank()) {
+            return trimmed;
+        }
+        if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) {
+            return text;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(trimmed);
+            return convertJsonValue(node);
+        } catch (Exception e) {
+            return text;
+        }
+    }
+
+    private String prettyJson(Object value) {
+        if (value == null) {
+            return "";
+        }
+        try {
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(value);
+        } catch (Exception e) {
+            return String.valueOf(value);
+        }
     }
 
     private boolean isEncryptedJwe(String token) {

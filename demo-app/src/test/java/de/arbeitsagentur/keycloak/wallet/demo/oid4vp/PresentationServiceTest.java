@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.demo.oid4vp;
 
 import tools.jackson.databind.ObjectMapper;
@@ -38,6 +53,7 @@ class PresentationServiceTest {
                 "did:example:wallet",
                 tempDir,
                 tempDir.resolve("keys.json"),
+                null,
                 null,
                 null,
                 null,
@@ -613,6 +629,615 @@ class PresentationServiceTest {
         assertThat(bundle.get().matches()).hasSize(1);
         assertThat(bundle.get().matches().get(0).requestedClaims()).extracting("name")
                 .containsExactlyInAnyOrder("given_name", "family_name");
+    }
+
+    // ============================================================================
+    // Root-level credential_sets tests
+    // These test the DCQL credential_sets feature where multiple credential types
+    // can be requested with options for which combination satisfies the request.
+    // ============================================================================
+
+    @Test
+    void credentialSets_eitherOrOption_walletHasFirstCredential_shouldMatch() throws Exception {
+        // Wallet has SD-JWT PID only
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice", "family_name", "Doe"),
+                "rawCredential", "sdjwt.pid.token~disc"
+        ));
+
+        // DCQL requests either SD-JWT PID (cred1) or mDoc PID (cred2)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }, { "path": ["family_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }, { "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["cred1"], ["cred2"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(1);
+        assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("cred1");
+        assertThat(bundle.get().matches().get(0).disclosedClaims()).containsEntry("given_name", "Alice");
+    }
+
+    @Test
+    void credentialSets_eitherOrOption_walletHasSecondCredential_shouldMatch() throws Exception {
+        // Wallet has mDoc PID only
+        saveCredential("user", Map.of(
+                "vct", "eu.europa.ec.eudi.pid.1",
+                "format", "mso_mdoc",
+                "credentialSubject", Map.of("given_name", "Bob", "family_name", "Smith"),
+                "rawCredential", "mdoc-pid-token"
+        ));
+
+        // DCQL requests either SD-JWT PID (cred1) or mDoc PID (cred2)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }, { "path": ["family_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }, { "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["cred1"], ["cred2"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(1);
+        assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("cred2");
+        assertThat(bundle.get().matches().get(0).disclosedClaims()).containsEntry("given_name", "Bob");
+    }
+
+    @Test
+    void credentialSets_eitherOrOption_walletHasBothCredentials_shouldMatchFirst() throws Exception {
+        // Wallet has both SD-JWT and mDoc PID
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+        saveCredential("user", Map.of(
+                "vct", "eu.europa.ec.eudi.pid.1",
+                "format", "mso_mdoc",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "mdoc-pid"
+        ));
+
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["cred1"], ["cred2"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        // Should return first satisfiable option (cred1)
+        assertThat(bundle.get().matches()).hasSize(1);
+        assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("cred1");
+    }
+
+    @Test
+    void credentialSets_eitherOrOption_walletHasNeither_shouldFail() throws Exception {
+        // Wallet has a different credential type
+        saveCredential("user", Map.of(
+                "vct", "urn:some:other:credential",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Charlie"),
+                "rawCredential", "other.token~disc"
+        ));
+
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["cred1"], ["cred2"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isEmpty();
+    }
+
+    @Test
+    void credentialSets_bothRequired_walletHasBoth_shouldMatch() throws Exception {
+        // Wallet has both credentials
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+        saveCredential("user", Map.of(
+                "vct", "org.iso.18013.5.1.mDL",
+                "format", "mso_mdoc",
+                "credentialSubject", Map.of("family_name", "Doe"),
+                "rawCredential", "mdoc-mdl"
+        ));
+
+        // Both cred1 AND cred2 are required (single option with both IDs)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["cred1", "cred2"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(2);
+        assertThat(bundle.get().matches().stream().map(PresentationService.DescriptorMatch::descriptorId).toList())
+                .containsExactlyInAnyOrder("cred1", "cred2");
+    }
+
+    @Test
+    void credentialSets_bothRequired_walletHasOnlyOne_shouldFail() throws Exception {
+        // Wallet has only the first credential
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // Both cred1 AND cred2 are required
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["cred1", "cred2"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isEmpty();
+    }
+
+    @Test
+    void credentialSets_mixedOptions_prefersSingleCredentialOverPair() throws Exception {
+        // Wallet has SD-JWT PID only
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice", "family_name", "Doe"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // Options: either single SD-JWT OR (mDoc AND mDL pair)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "sdjwt_pid",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "mdoc_pid",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "mdl",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["sdjwt_pid"], ["mdoc_pid", "mdl"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(1);
+        assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("sdjwt_pid");
+    }
+
+    @Test
+    void credentialSets_multipleCredentialSets_allMustBeSatisfied() throws Exception {
+        // Wallet has PID and mDL
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+        saveCredential("user", Map.of(
+                "vct", "org.iso.18013.5.1.mDL",
+                "format", "mso_mdoc",
+                "credentialSubject", Map.of("family_name", "Doe"),
+                "rawCredential", "mdoc-mdl"
+        ));
+
+        // Two credential_sets: one for PID (either format), one for mDL
+        // Per OID4VP 1.0 Section 6.2: ALL required credential_sets must be satisfied
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "pid_sdjwt",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "pid_mdoc",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "mdl",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [
+                    { "options": [["pid_sdjwt"], ["pid_mdoc"]] },
+                    { "options": [["mdl"]] }
+                  ]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        // Should return BOTH: one from first set (pid_sdjwt) AND one from second set (mdl)
+        assertThat(bundle.get().matches()).hasSize(2);
+        assertThat(bundle.get().matches().stream().map(PresentationService.DescriptorMatch::descriptorId).toList())
+                .containsExactlyInAnyOrder("pid_sdjwt", "mdl");
+    }
+
+    @Test
+    void credentialSets_multipleCredentialSets_failsIfOneSetCannotBeSatisfied() throws Exception {
+        // Wallet has only PID, no mDL
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // Two required credential_sets: PID and mDL
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "pid",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "mdl",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [
+                    { "options": [["pid"]] },
+                    { "options": [["mdl"]] }
+                  ]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        // Should fail because mDL credential_set cannot be satisfied
+        assertThat(bundle).isEmpty();
+    }
+
+    @Test
+    void credentialSets_optionalSet_ignoredWhenNotSatisfiable() throws Exception {
+        // Wallet has only PID
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // PID is required, mDL is optional (required: false)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "pid",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "mdl",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": [
+                    { "options": [["pid"]] },
+                    { "options": [["mdl"]], "required": false }
+                  ]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        // Should succeed because only required set (PID) is satisfied; optional mDL is skipped
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(1);
+        assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("pid");
+    }
+
+    @Test
+    void credentialSets_noCredentialSets_requiresAllCredentials() throws Exception {
+        // When no credential_sets is present, all credentials must match (original behavior)
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // Request two credentials without credential_sets - both must be present
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        // Should fail because cred2 (mDoc) is not in wallet
+        assertThat(bundle).isEmpty();
+    }
+
+    @Test
+    void credentialSets_emptyCredentialSets_fallsBackToAllRequired() throws Exception {
+        // Empty credential_sets array should behave like no credential_sets
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "cred1",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "cred2",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["family_name"] }]
+                    }
+                  ],
+                  "credential_sets": []
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        // Should fail because empty credential_sets falls back to requiring all
+        assertThat(bundle).isEmpty();
+    }
+
+    @Test
+    void credentialSets_withPurpose_stillMatchesCorrectly() throws Exception {
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // credential_sets with purpose field (should be ignored for matching)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "pid",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "purpose": "Identity verification for age check",
+                    "options": [["pid"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(1);
+    }
+
+    @Test
+    void credentialSets_threeWayOptions_selectsFirstSatisfiable() throws Exception {
+        // Wallet has only SD-JWT PID
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Alice"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        // Three options: mDoc PID, mDL, or SD-JWT PID (in that order)
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "mdoc_pid",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
+                      "claims": [{ "path": ["given_name"] }]
+                    },
+                    {
+                      "id": "mdl",
+                      "format": "mso_mdoc",
+                      "meta": { "doctype_value": "org.iso.18013.5.1.mDL" },
+                      "claims": [{ "path": ["family_name"] }]
+                    },
+                    {
+                      "id": "sdjwt_pid",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"] }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["mdoc_pid"], ["mdl"], ["sdjwt_pid"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        assertThat(bundle).isPresent();
+        assertThat(bundle.get().matches()).hasSize(1);
+        // First two options (mdoc_pid, mdl) are not in wallet, so third option (sdjwt_pid) should match
+        assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("sdjwt_pid");
+    }
+
+    @Test
+    void credentialSets_claimsMustAlsoMatch_withinSatisfiedOption() throws Exception {
+        // Wallet has SD-JWT PID but with different claim value
+        saveCredential("user", Map.of(
+                "vct", "urn:eudi:pid:1",
+                "format", "dc+sd-jwt",
+                "credentialSubject", Map.of("given_name", "Bob"),
+                "rawCredential", "sdjwt.pid~disc"
+        ));
+
+        String dcql = """
+                {
+                  "credentials": [
+                    {
+                      "id": "pid",
+                      "format": "dc+sd-jwt",
+                      "meta": { "vct_values": ["urn:eudi:pid:1"] },
+                      "claims": [{ "path": ["given_name"], "value": "Alice" }]
+                    }
+                  ],
+                  "credential_sets": [{
+                    "options": [["pid"]]
+                  }]
+                }
+                """;
+
+        Optional<PresentationService.PresentationBundle> bundle = presentationService.preparePresentations("user", dcql);
+        // Should fail because claim value doesn't match
+        assertThat(bundle).isEmpty();
     }
 
     private void saveCredential(String userId, Map<String, Object> credential) throws Exception {

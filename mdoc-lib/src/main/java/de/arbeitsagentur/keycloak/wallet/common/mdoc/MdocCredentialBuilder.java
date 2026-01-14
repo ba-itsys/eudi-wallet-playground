@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.common.mdoc;
 
 import COSE.AlgorithmID;
@@ -7,10 +22,12 @@ import COSE.Sign1Message;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.dataformat.cbor.CBORMapper;
 import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.jwk.JWK;
 import com.upokecenter.cbor.CBOREncodeOptions;
 import com.upokecenter.cbor.CBORObject;
+import com.upokecenter.cbor.CBORType;
 import de.arbeitsagentur.keycloak.wallet.common.util.HexUtils;
-import de.arbeitsagentur.keycloak.wallet.common.mdoc.CredentialBuildResult;
+import de.arbeitsagentur.keycloak.wallet.common.credential.CredentialBuildResult;
 
 import java.security.MessageDigest;
 import java.security.SecureRandom;
@@ -19,6 +36,7 @@ import java.time.Instant;
 import java.time.format.DateTimeFormatter;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -27,8 +45,7 @@ import java.util.Map;
  * Builds ISO 18013-5 compliant mDoc credentials.
  */
 public class MdocCredentialBuilder {
-    private static final CBOREncodeOptions CTAP_CANONICAL = CBOREncodeOptions.DefaultCtap2Canonical;
-    private static final CBOREncodeOptions DEFAULT_ENCODE = CBOREncodeOptions.Default;
+    private static final CBOREncodeOptions ENCODE_OPTIONS = CBOREncodeOptions.Default;
     private final ECKey signingKey;
     private final Duration credentialTtl;
     private final CBORMapper cborMapper = new CBORMapper();
@@ -55,30 +72,19 @@ public class MdocCredentialBuilder {
             mso.Add("docType", vct);
             mso.Add("validityInfo", validityInfo);
             if (cnf != null) {
-                mso.Add("deviceKeyInfo", CBORObject.FromObject(toJavaObject(cnf)));
+                CBORObject deviceKeyInfo = buildDeviceKeyInfo(cnf);
+                if (deviceKeyInfo != null) {
+                    mso.Add("deviceKeyInfo", deviceKeyInfo);
+                }
             }
-            byte[] msoBytes = mso.EncodeToBytes(CTAP_CANONICAL);
-            byte[] issuerAuth = signMso(CBORObject.FromObjectAndTag(msoBytes, 24).EncodeToBytes(CTAP_CANONICAL));
+            byte[] msoBytes = mso.EncodeToBytes(ENCODE_OPTIONS);
+            byte[] issuerAuth = signMso(CBORObject.FromObjectAndTag(msoBytes, 24).EncodeToBytes(ENCODE_OPTIONS));
 
             CBORObject issuerSigned = CBORObject.NewMap();
             issuerSigned.Add("nameSpaces", issuerSignedData.nameSpaces());
             issuerSigned.Add("issuerAuth", CBORObject.FromObject(issuerAuth));
-
-            CBORObject document = CBORObject.NewMap();
-            document.Add("docType", vct);
-            document.Add("issuerSigned", issuerSigned);
-            document.Add("validityInfo", validityInfo);
-
-            CBORObject mdoc = CBORObject.NewMap();
-            mdoc.Add("version", "1.0");
-            CBORObject documents = CBORObject.NewArray();
-            documents.Add(document);
-            mdoc.Add("documents", documents);
-            mdoc.Add("status", 0);
-            mdoc.Add("issuer", issuer);
-
-            byte[] cbor = mdoc.EncodeToBytes(DEFAULT_ENCODE);
-            String encoded = HexUtils.encode(cbor);
+            byte[] issuerSignedBytes = issuerSigned.EncodeToBytes(ENCODE_OPTIONS);
+            String encoded = Base64.getUrlEncoder().withoutPadding().encodeToString(issuerSignedBytes);
 
             Map<String, Object> decoded = new LinkedHashMap<>();
             decoded.put("iss", issuer);
@@ -144,11 +150,11 @@ public class MdocCredentialBuilder {
             item.Add("random", CBORObject.FromObject(salt));
             item.Add("elementIdentifier", entry.getKey());
             item.Add("elementValue", CBORObject.FromObject(entry.getValue()));
-            byte[] encodedItem = item.EncodeToBytes(CTAP_CANONICAL);
+            byte[] encodedItem = item.EncodeToBytes(ENCODE_OPTIONS);
             CBORObject taggedItem = CBORObject.FromObjectAndTag(encodedItem, 24);
             issuerItems.add(taggedItem);
 
-            byte[] digest = sha.digest(taggedItem.EncodeToBytes(CTAP_CANONICAL));
+            byte[] digest = sha.digest(taggedItem.EncodeToBytes(ENCODE_OPTIONS));
             Map<String, Object> digestEntry = new LinkedHashMap<>();
             digestEntry.put("digestID", digestId);
             digestEntry.put("digest", digest);
@@ -174,15 +180,42 @@ public class MdocCredentialBuilder {
 
     private CBORObject buildValueDigests(String namespace, List<Map<String, Object>> digestEntries) {
         CBORObject valueDigests = CBORObject.NewMap();
-        CBORObject digests = CBORObject.NewArray();
+        CBORObject digests = CBORObject.NewMap();
         for (Map<String, Object> entry : digestEntries) {
-            CBORObject digest = CBORObject.NewMap();
-            digest.Add("digestID", entry.get("digestID"));
-            digest.Add("digest", CBORObject.FromObject(entry.get("digest")));
-            digests.Add(digest);
+            Object digestId = entry.get("digestID");
+            if (digestId == null) {
+                continue;
+            }
+            digests.Add(CBORObject.FromObject(digestId), CBORObject.FromObject(entry.get("digest")));
         }
         valueDigests.Add(namespace, digests);
         return valueDigests;
+    }
+
+    private CBORObject buildDeviceKeyInfo(JsonNode cnf) {
+        try {
+            JsonNode jwkNode = cnf.has("jwk") ? cnf.get("jwk") : cnf;
+            if (jwkNode == null || jwkNode.isNull() || jwkNode.isMissingNode()) {
+                return null;
+            }
+            @SuppressWarnings("unchecked")
+            Map<String, Object> jwkMap = cborMapper.convertValue(jwkNode, Map.class);
+            JWK jwk = JWK.parse(jwkMap);
+            if (!(jwk instanceof ECKey ecKey)) {
+                return null;
+            }
+            CBORObject coseKey = CBORObject.NewMap();
+            coseKey.Add(CBORObject.FromObject(1), CBORObject.FromObject(2)); // kty: EC2
+            coseKey.Add(CBORObject.FromObject(-1), CBORObject.FromObject(1)); // crv: P-256
+            coseKey.Add(CBORObject.FromObject(-2), CBORObject.FromObject(ecKey.getX().decode()));
+            coseKey.Add(CBORObject.FromObject(-3), CBORObject.FromObject(ecKey.getY().decode()));
+
+            CBORObject info = CBORObject.NewMap();
+            info.Add("deviceKey", coseKey);
+            return info;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private byte[] signMso(byte[] msoPayload) throws Exception {
@@ -238,12 +271,25 @@ public class MdocCredentialBuilder {
             for (CBORObject key : valueDigests.getKeys()) {
                 List<Map<String, Object>> entries = new ArrayList<>();
                 CBORObject list = valueDigests.get(key);
-                for (int i = 0; i < list.size(); i++) {
-                    CBORObject element = list.get(i);
-                    Map<String, Object> entry = new LinkedHashMap<>();
-                    entry.put("digestID", element.get("digestID").AsInt32Value());
-                    entry.put("digest", HexUtils.encode(element.get("digest").GetByteString()));
-                    entries.add(entry);
+                if (list != null && list.getType() == CBORType.Map) {
+                    for (CBORObject digestId : list.getKeys()) {
+                        CBORObject digestValue = list.get(digestId);
+                        if (digestValue == null || digestValue.getType() != CBORType.ByteString) {
+                            continue;
+                        }
+                        Map<String, Object> entry = new LinkedHashMap<>();
+                        entry.put("digestID", digestId.AsInt32Value());
+                        entry.put("digest", HexUtils.encode(digestValue.GetByteString()));
+                        entries.add(entry);
+                    }
+                } else if (list != null) {
+                    for (int i = 0; i < list.size(); i++) {
+                        CBORObject element = list.get(i);
+                        Map<String, Object> entry = new LinkedHashMap<>();
+                        entry.put("digestID", element.get("digestID").AsInt32Value());
+                        entry.put("digest", HexUtils.encode(element.get("digest").GetByteString()));
+                        entries.add(entry);
+                    }
                 }
                 decoded.put(key.AsString(), entries);
             }

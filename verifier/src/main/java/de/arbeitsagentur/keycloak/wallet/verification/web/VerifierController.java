@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.verification.web;
 
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
@@ -12,6 +27,7 @@ import de.arbeitsagentur.keycloak.wallet.verification.service.VerifierKeyService
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerificationSteps;
 import de.arbeitsagentur.keycloak.wallet.verification.session.VerifierSession;
 import de.arbeitsagentur.keycloak.wallet.verification.session.VerifierSessionService;
+import de.arbeitsagentur.keycloak.wallet.verification.session.VerifierSessionStateStore;
 import de.arbeitsagentur.keycloak.wallet.common.debug.DebugLogService;
 import de.arbeitsagentur.keycloak.wallet.common.debug.DebugLogService.DebugEntry;
 import tools.jackson.core.JsonParser;
@@ -40,6 +56,7 @@ import jakarta.servlet.http.HttpSession;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -58,6 +75,7 @@ import org.springframework.web.util.UriUtils;
 
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -84,9 +102,11 @@ public class VerifierController {
     private final VerifierProperties properties;
     private final DebugLogService debugLogService;
     private final URI publicBaseUri;
+    private final VerifierSessionStateStore verifierSessionStateStore;
 
     public VerifierController(DcqlService dcqlService,
                               VerifierSessionService verifierSessionService,
+                              VerifierSessionStateStore verifierSessionStateStore,
                               TrustListService trustListService,
                               PresentationVerificationService verificationService,
                               VerifierKeyService verifierKeyService,
@@ -100,6 +120,7 @@ public class VerifierController {
                               @Value("${wallet.public-base-url:}") String publicBaseUrl) {
         this.dcqlService = dcqlService;
         this.verifierSessionService = verifierSessionService;
+        this.verifierSessionStateStore = verifierSessionStateStore;
         this.trustListService = trustListService;
         this.verificationService = verificationService;
         this.verifierKeyService = verifierKeyService;
@@ -114,7 +135,7 @@ public class VerifierController {
     }
 
     @GetMapping
-    public String verifierPage(Model model) {
+    public String verifierPage(Model model, HttpServletRequest request) {
         String defaultDcql = pretty(dcqlService.defaultDcqlQuery());
         model.addAttribute("defaultDcqlQuery", defaultDcql);
         String defaultWalletAuth = properties.walletAuthEndpoint();
@@ -125,12 +146,27 @@ public class VerifierController {
                     .toUriString();
         }
         model.addAttribute("defaultWalletAuthEndpoint", defaultWalletAuth);
-        model.addAttribute("defaultWalletClientId", properties.clientId());
         model.addAttribute("defaultClientMetadata", defaultClientMetadata());
         VerifierCryptoService.X509Material defaultX509 = verifierCryptoService.resolveX509Material(null);
         model.addAttribute("defaultX509ClientId", verifierCryptoService.deriveX509ClientId(null, defaultX509.certificatePem()));
+        String defaultX509SanClientId;
+        try {
+            defaultX509SanClientId = verifierCryptoService.deriveX509SanClientId(null, defaultX509.certificatePem());
+        } catch (Exception e) {
+            defaultX509SanClientId = "";
+        }
+        model.addAttribute("defaultX509SanClientId", defaultX509SanClientId);
         model.addAttribute("defaultX509Cert", defaultX509.certificatePem());
         model.addAttribute("defaultX509Source", defaultX509.source());
+        model.addAttribute("defaultWalletAudience", "https://self-issued.me/v2");
+
+        model.addAttribute("defaultAuthType", "plain");
+        model.addAttribute("defaultResponseMode", "direct_post");
+        model.addAttribute("defaultRequestObjectMode", "request");
+        model.addAttribute("defaultRequestUriMethod", "post");
+        model.addAttribute("prefillClientMetadata", "");
+        model.addAttribute("defaultWalletClientId", properties.clientId());
+
         model.addAttribute("verificationDebug", debugLogService.verification());
         model.addAttribute("trustLists", trustListService.options());
         model.addAttribute("defaultTrustList", trustListService.defaultTrustListId());
@@ -228,8 +264,16 @@ public class VerifierController {
                                                   String attestationIssuer,
                                                   @RequestParam(name = "responseType", required = false)
                                                   String responseType,
+                                                  @RequestParam(name = "responseMode", required = false)
+                                                  String responseMode,
                                                   @RequestParam(name = "requestObjectMode", required = false)
                                                   String requestObjectMode,
+                                                  @RequestParam(name = "requestUriMethod", required = false)
+                                                  String requestUriMethod,
+                                                  @RequestParam(name = "walletAudience", required = false)
+                                                  String walletAudience,
+                                                  @RequestParam(name = "verifierInfo", required = false)
+                                                  String verifierInfo,
                                                   @RequestParam(name = "trustList", required = false)
                                                   String trustList,
                                                   HttpServletRequest request) {
@@ -239,11 +283,23 @@ public class VerifierController {
         String effectiveClientId = walletClientId != null && !walletClientId.isBlank()
                 ? walletClientId
                 : properties.clientId();
+        String resolvedDcql = resolveDcqlQuery(providedDcql);
+        boolean responseModeExplicit = responseMode != null && !responseMode.isBlank();
+        String effectiveResponseMode = responseModeExplicit ? responseMode : "direct_post";
+        if (!responseModeExplicit && requestsEncryptedResponse(clientMetadata)) {
+            effectiveResponseMode = "direct_post.jwt";
+        }
+        String effectiveRequestUriMethod = requestUriMethod != null && !requestUriMethod.isBlank() ? requestUriMethod : "post";
         VerifierCryptoService.X509Material x509Material = null;
-        if ("x509_hash".equalsIgnoreCase(authType)) {
+        if ("x509_hash".equalsIgnoreCase(authType) || "x509_san_dns".equalsIgnoreCase(authType)) {
             x509Material = verifierCryptoService.resolveX509Material(walletClientCert);
             walletClientCert = x509Material.combinedPem();
-            effectiveClientId = verifierCryptoService.deriveX509ClientId(effectiveClientId, x509Material.certificatePem());
+            if ("x509_hash".equalsIgnoreCase(authType)) {
+                effectiveClientId = verifierCryptoService.deriveX509ClientId(effectiveClientId, x509Material.certificatePem());
+            } else {
+                effectiveClientId = verifierCryptoService.deriveX509SanClientId(effectiveClientId, x509Material.certificatePem());
+            }
+            walletClientId = effectiveClientId;
         }
         if ("verifier_attestation".equalsIgnoreCase(authType)
                 && (effectiveClientId == null || !effectiveClientId.startsWith("verifier_attestation:"))) {
@@ -251,15 +307,14 @@ public class VerifierController {
         }
         String state = UUID.randomUUID().toString();
         String nonce = UUID.randomUUID().toString();
-        String resolvedDcql = resolveDcqlQuery(providedDcql);
-        if ("x509_hash".equalsIgnoreCase(authType) && x509Material != null) {
+        if ((("x509_hash".equalsIgnoreCase(authType) || "x509_san_dns".equalsIgnoreCase(authType)) && x509Material != null)) {
             debugLogService.addVerification(
                     state,
                     "Authorization",
-                    "x509_hash client binding",
+                    authType + " client binding",
                     "INFO",
-                    "x509_hash",
-                    Map.of("client_id", effectiveClientId),
+                    authType,
+                    Map.of("client_id", effectiveClientId, "response_mode", effectiveResponseMode),
                     x509Material.certificatePem(),
                     null,
                     Map.of("certificate_source", x509Material.source()),
@@ -267,18 +322,25 @@ public class VerifierController {
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.9.3",
                     null);
         }
-        verifierSessionService.saveSession(request.getSession(),
-                new VerifierSession(state, nonce, resolvedDcql,
-                        trustList != null && !trustList.isBlank() ? trustList : trustListService.defaultTrustListId(),
-                        clientMetadata,
-                        effectiveClientId,
-                        authType,
-                        null));
+        HttpSession servletSession = request.getSession();
+        List<String> trustedIssuerJwks = List.of();
+
+        // Compute callback URI before creating session - this is the response_uri used in authorization request
+        // and must be stored for consistent mDoc SessionTranscript verification
         UriComponentsBuilder baseUri = baseUri(request);
-        URI callback = baseUri.cloneBuilder()
-                .path("/verifier/callback")
-                .build()
-                .toUri();
+        URI callback = baseUri.cloneBuilder().path("/verifier/callback").build().toUri();
+        String responseUri = callback.toString();
+
+        VerifierSession verifierSession = new VerifierSession(state, nonce, resolvedDcql, effectiveResponseMode,
+                trustList != null && !trustList.isBlank() ? trustList : trustListService.defaultTrustListId(),
+                clientMetadata,
+                effectiveClientId,
+                authType,
+                null,
+                trustedIssuerJwks,
+                responseUri);
+        verifierSessionService.saveSession(servletSession, verifierSession);
+        verifierSessionStateStore.put(verifierSession);
         VerifierAuthService.WalletAuthRequest walletAuth = verifierAuthService.buildWalletAuthorizationUrl(
                 callback,
                 state,
@@ -292,7 +354,11 @@ public class VerifierController {
                 attestationCert,
                 attestationIssuer,
                 responseType,
+                effectiveResponseMode,
                 requestObjectMode,
+                effectiveRequestUriMethod,
+                walletAudience,
+                verifierInfo,
                 baseUri
         );
         debugLogService.addVerification(
@@ -305,7 +371,8 @@ public class VerifierController {
                 "",
                 302,
                 Map.of("Location", walletAuth.uri().toString()),
-                "state=" + state + "\nnonce=" + nonce + "\ntrust_list=" + (trustList != null ? trustList : trustListService.defaultTrustListId()) + "\nrequest_mode=" + (walletAuth.usedRequestUri() ? "request_uri" : "request"),
+                "state=" + state + "\nnonce=" + nonce + "\ntrust_list=" + (trustList != null ? trustList : trustListService.defaultTrustListId()) + "\nrequest_mode=" + (walletAuth.usedRequestUri() ? "request_uri" : "request")
+                        + "\nresponse_mode=" + effectiveResponseMode,
                 "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#vp_token_request",
                 null);
         if ("verifier_attestation".equalsIgnoreCase(authType) && walletAuth.attestationJwt() != null && !walletAuth.attestationJwt().isBlank()) {
@@ -322,20 +389,44 @@ public class VerifierController {
                     "",
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#verifier_attestation_jwt",
                     tokenViewService.decodeJwtLike(walletAuth.attestationJwt()));
-            verifierSessionService.saveSession(request.getSession(),
-                    new VerifierSession(state, nonce, resolvedDcql,
-                            trustList != null && !trustList.isBlank() ? trustList : trustListService.defaultTrustListId(),
-                            clientMetadata,
-                            effectiveClientId,
-                            authType,
-                            walletAuth.attestationJwt()));
+            VerifierSession updatedSession = new VerifierSession(state, nonce, resolvedDcql, effectiveResponseMode,
+                    trustList != null && !trustList.isBlank() ? trustList : trustListService.defaultTrustListId(),
+                    clientMetadata,
+                    effectiveClientId,
+                    authType,
+                    walletAuth.attestationJwt(),
+                    trustedIssuerJwks,
+                    responseUri);
+            verifierSessionService.saveSession(servletSession, updatedSession);
+            verifierSessionStateStore.put(updatedSession);
         }
         return ResponseEntity.status(302).location(walletAuth.uri()).build();
     }
 
-    @PostMapping(value = "/callback")
-    public ModelAndView handleCallback(@RequestParam("state") String state,
+    private boolean requestsEncryptedResponse(String clientMetadataJson) {
+        if (clientMetadataJson == null || clientMetadataJson.isBlank()) {
+            return false;
+        }
+        try {
+            JsonNode node = objectMapper.readTree(clientMetadataJson);
+            JsonNode jwks = node.get("jwks");
+            if (jwks == null || jwks.isNull()) {
+                return false;
+            }
+            if (jwks.has("keys") && jwks.get("keys").isArray()) {
+                return !jwks.get("keys").isEmpty();
+            }
+            // allow non-JWKS shapes if present; encryption key selection will validate later
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    @PostMapping(value = "/callback", consumes = MediaType.APPLICATION_FORM_URLENCODED_VALUE)
+    public Object handleCallback(@RequestParam(name = "state", required = false) String state,
                                        @RequestParam(name = "vp_token", required = false) String vpToken,
+                                       @RequestParam(name = "response", required = false) String encryptedResponse,
                                        @RequestParam(name = "id_token", required = false) String idToken,
                                        @RequestParam(name = "key_binding", required = false) String keyBindingToken,
                                        @RequestParam(name = "key_binding_jwt", required = false) String keyBindingTokenAlt,
@@ -344,16 +435,101 @@ public class VerifierController {
                                        @RequestParam(name = "nonce", required = false) String responseNonce,
                                        @RequestParam(name = "error", required = false) String error,
                                        @RequestParam(name = "error_description", required = false) String errorDescription,
+                                       HttpServletRequest request,
                                        HttpSession httpSession) {
+        boolean wantsJson = wantsJson(request);
         LOG.info("direct_post callback received state={} error={}", state, error);
         VerificationSteps steps = new VerificationSteps();
         String vpTokenRaw = vpToken;
         String keyBindingJwt = firstNonBlank(keyBindingTokenAlt, keyBindingToken);
         String effectiveDpop = firstNonBlank(dpopToken, dpopTokenAlt);
-        String callbackRequestBody = formBody(state, vpTokenRaw, idToken, responseNonce, error, errorDescription, keyBindingJwt, effectiveDpop);
+        if (encryptedResponse != null && !encryptedResponse.isBlank()) {
+            steps.add("Processing response (direct_post.jwt)",
+                    "Response parameter contained a JWT/JWE; decode it to extract vp_token, state, nonce, and errors.",
+                    "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.3.1");
+            try {
+                String decrypted = verifierKeyService.decrypt(encryptedResponse);
+                JsonNode node = objectMapper.readTree(decrypted);
+                if (state == null || state.isBlank()) {
+                    state = node.path("state").asText(state);
+                }
+                if (vpTokenRaw == null || vpTokenRaw.isBlank()) {
+                    JsonNode vpNode = node.get("vp_token");
+                    if (vpNode != null && !vpNode.isNull()) {
+                        vpTokenRaw = vpNode.isTextual() ? vpNode.asText() : objectMapper.writeValueAsString(vpNode);
+                    }
+                }
+                if (idToken == null || idToken.isBlank()) {
+                    idToken = node.path("id_token").asText(null);
+                }
+                if (responseNonce == null || responseNonce.isBlank()) {
+                    responseNonce = node.path("nonce").asText(null);
+                }
+                if (error == null || error.isBlank()) {
+                    error = node.path("error").asText(null);
+                }
+                if (errorDescription == null || errorDescription.isBlank()) {
+                    errorDescription = node.path("error_description").asText(null);
+                }
+                if (keyBindingJwt == null || keyBindingJwt.isBlank()) {
+                    keyBindingJwt = node.path("key_binding_jwt").asText(null);
+                }
+                steps.add("Decrypted encrypted response (JWE)",
+                        "Decrypted response payload with verifier encryption key.",
+                        "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.3.1");
+            } catch (Exception e) {
+                try {
+                    SignedJWT signed = SignedJWT.parse(encryptedResponse);
+                    JsonNode node = objectMapper.readTree(signed.getPayload().toString());
+                    if (state == null || state.isBlank()) {
+                        state = node.path("state").asText(state);
+                    }
+                    if (vpTokenRaw == null || vpTokenRaw.isBlank()) {
+                        JsonNode vpNode = node.get("vp_token");
+                        if (vpNode != null && !vpNode.isNull()) {
+                            vpTokenRaw = vpNode.isTextual() ? vpNode.asText() : objectMapper.writeValueAsString(vpNode);
+                        }
+                    }
+                    if (idToken == null || idToken.isBlank()) {
+                        idToken = node.path("id_token").asText(null);
+                    }
+                    if (responseNonce == null || responseNonce.isBlank()) {
+                        responseNonce = node.path("nonce").asText(null);
+                    }
+                    if (error == null || error.isBlank()) {
+                        error = node.path("error").asText(null);
+                    }
+                    if (errorDescription == null || errorDescription.isBlank()) {
+                        errorDescription = node.path("error_description").asText(null);
+                    }
+                    if (keyBindingJwt == null || keyBindingJwt.isBlank()) {
+                        keyBindingJwt = node.path("key_binding_jwt").asText(null);
+                    }
+                    steps.add("Parsed signed response (JWS)",
+                            "Decoded signed response JWT payload (signature not validated).",
+                            "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.3.1");
+                } catch (Exception parseException) {
+                    steps.add("Unable to decode response", e.getMessage(), "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.3.1");
+                    if (wantsJson) {
+                        return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                                .contentType(MediaType.APPLICATION_JSON)
+                                .body(Map.of("error", "Unable to decode response"));
+                    }
+                    return resultView(state, "Unable to decode response", false, steps.titles(), List.of(), vpTokenRaw, idToken, Map.of(), steps.details());
+                }
+            }
+        }
+        String callbackRequestBody = (encryptedResponse != null && !encryptedResponse.isBlank() ? "response=" + encryptedResponse + "\n" : "")
+                + formBody(state, vpTokenRaw, idToken, responseNonce, error, errorDescription, keyBindingJwt, effectiveDpop);
         LOG.info("direct_post callback request body:\n{}", callbackRequestBody);
         VerifierSession verifierSession = verifierSessionService.getSession(httpSession);
-        if (verifierSession == null || !verifierSession.state().equals(state)) {
+        if (verifierSession == null || state == null || state.isBlank() || !verifierSession.state().equals(state)) {
+            verifierSession = verifierSessionStateStore.get(state);
+            if (verifierSession != null) {
+                verifierSessionService.saveSession(httpSession, verifierSession);
+            }
+        }
+        if (state == null || state.isBlank() || verifierSession == null || !verifierSession.state().equals(state)) {
             steps.add("Verifier session and state validation failed",
                     "Verifier session not found or state mismatch.",
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6");
@@ -367,29 +543,39 @@ public class VerifierController {
                     Map.of(),
                     "vp_token length=%d".formatted(vpToken != null ? vpToken.length() : 0),
                     null, vpTokenRaw, keyBindingJwt, effectiveDpop);
-            return resultView("Invalid verifier session", false, steps.titles(), parseVpTokens(vpTokenRaw), vpTokenRaw, idToken, Map.of(), steps.details());
-        }
-        if (error != null && !error.isBlank()) {
-            String viewMessage = errorDescription != null ? errorDescription : "Presentation denied";
-            if (error != null && !error.isBlank() && !viewMessage.contains(error)) {
-                viewMessage = viewMessage + " (" + error + ")";
+            if (wantsJson) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(Map.of("error", "Invalid verifier session"));
             }
-            steps.add("Wallet returned error: " + error,
-                    "Wallet returned error: " + error,
-                    "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6");
-            LOG.info("direct_post callback error state={} error={} desc={}", state, error, errorDescription);
-            logCallback(state, "direct_post callback (error)",
-                    "POST",
-                    "/verifier/callback",
-                    Map.of("Content-Type", "application/x-www-form-urlencoded"),
-                    callbackRequestBody,
-                    HttpStatus.BAD_REQUEST.value(),
-                    Map.of(),
-                    "error=%s\nerror_description=%s".formatted(error, errorDescription),
-                    null, vpTokenRaw, keyBindingJwt, effectiveDpop);
-            return resultView(viewMessage, false, steps.titles(), parseVpTokens(vpTokenRaw), vpTokenRaw, idToken, Map.of(), steps.details());
+            return resultView(state, "Invalid verifier session", false, steps.titles(), parseVpTokens(vpTokenRaw), vpTokenRaw, idToken, Map.of(), steps.details());
         }
         try {
+            if (error != null && !error.isBlank()) {
+                String viewMessage = errorDescription != null ? errorDescription : "Presentation denied";
+                if (error != null && !error.isBlank() && !viewMessage.contains(error)) {
+                    viewMessage = viewMessage + " (" + error + ")";
+                }
+                steps.add("Wallet returned error: " + error,
+                        "Wallet returned error: " + error,
+                        "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6");
+                LOG.info("direct_post callback error state={} error={} desc={}", state, error, errorDescription);
+                logCallback(state, "direct_post callback (error)",
+                        "POST",
+                        "/verifier/callback",
+                        Map.of("Content-Type", "application/x-www-form-urlencoded"),
+                        callbackRequestBody,
+                        HttpStatus.BAD_REQUEST.value(),
+                        Map.of(),
+                        "error=%s\nerror_description=%s".formatted(error, errorDescription),
+                        null, vpTokenRaw, keyBindingJwt, effectiveDpop);
+                if (wantsJson) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(Map.of("error", viewMessage));
+                }
+                return resultView(state, viewMessage, false, steps.titles(), parseVpTokens(vpTokenRaw), vpTokenRaw, idToken, Map.of(), steps.details());
+            }
             List<VpTokenEntry> vpTokens = extractVpTokens(vpTokenRaw);
             if (vpTokens.isEmpty()) {
                 steps.add("vp_token missing or empty",
@@ -405,20 +591,33 @@ public class VerifierController {
                         Map.of(),
                         "vp_token length=0",
                         null, vpTokenRaw, keyBindingJwt, effectiveDpop);
-                return resultView("Missing vp_token", false, steps.titles(), List.of(), vpTokenRaw, idToken, Map.of(), steps.details());
+                if (wantsJson) {
+                    return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .body(Map.of("error", "Missing vp_token"));
+                }
+                return resultView(state, "Missing vp_token", false, steps.titles(), List.of(), vpTokenRaw, idToken, Map.of(), steps.details());
             }
             if (verifierSession.authType() != null && !verifierSession.authType().isBlank()) {
                 steps.add("Wallet client authentication",
                         "Wallet authenticated using " + verifierSession.authType(),
                         "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-5.9.3");
             }
+            // Use stored responseUri from session for mDoc SessionTranscript verification
+            // This ensures consistency with the response_uri sent in the authorization request
+            String expectedResponseUri = verifierSession.responseUri() != null
+                    ? verifierSession.responseUri()
+                    : currentRequestExternalUrl(request);
             List<Map<String, Object>> payloads = verificationService.verifyPresentations(
                     vpTokens.stream().map(VpTokenEntry::token).toList(),
                     verifierSession.nonce(),
                     responseNonce,
                     verifierSession.trustListId(),
                     verifierSession.clientId(),
-                    steps);
+                    expectedResponseUri,
+                    verifierSession.responseMode(),
+                    steps,
+                    verifierSession.trustedIssuerJwks());
             steps.add("Presentation verified successfully (%d token%s)".formatted(payloads.size(), payloads.size() == 1 ? "" : "s"),
                     "All verification checks passed for the presented credential(s).",
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6");
@@ -440,6 +639,20 @@ public class VerifierController {
                             tokensToJson(vpTokens.stream().map(VpTokenEntry::token).toList()),
                             keyBindingJwt,
                             effectiveDpop));
+            debugLogService.addVerification(
+                    verifierSession.state(),
+                    "Verification",
+                    "Verifier verification steps",
+                    "VERIFY",
+                    "verifier.verifyPresentations",
+                    Map.of(),
+                    formatVerificationSteps(steps),
+                    HttpStatus.OK.value(),
+                    Map.of(),
+                    "",
+                    "",
+                    ""
+            );
             LOG.info("direct_post callback verified state={} tokens={} key_binding_present={} encrypted_vp={}", state, vpTokens.size(), keyBindingJwt != null && !keyBindingJwt.isBlank(),
                     tokenViewService.hasEncryptedToken(vpTokens.stream().map(VpTokenEntry::token).toList()));
             LOG.info("direct_post callback response body:\n{}", formBody(state, vpTokenRaw, idToken, responseNonce, error, errorDescription, keyBindingJwt, effectiveDpop));
@@ -460,7 +673,12 @@ public class VerifierController {
             if (effectiveDpop != null && !effectiveDpop.isBlank()) {
                 combined.put("dpop_token", effectiveDpop);
             }
-            return resultView("Verified credential(s)", true, steps.titles(), vpTokens.stream().map(VpTokenEntry::token).toList(), vpTokenRaw, idToken, combined,
+            if (wantsJson) {
+                return ResponseEntity.ok()
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(Map.of());
+            }
+            return resultView(state, "Verified credential(s)", true, steps.titles(), vpTokens.stream().map(VpTokenEntry::token).toList(), vpTokenRaw, idToken, combined,
                     steps.details());
         } catch (Exception e) {
             steps.add("Verification failed: " + e.getMessage(),
@@ -475,17 +693,114 @@ public class VerifierController {
                     Map.of(),
                     e.getMessage(),
                     parseVpTokens(vpTokenRaw), vpTokenRaw, keyBindingJwt, effectiveDpop);
-            LOG.info("direct_post callback verification failed state={} message={}", state, e.getMessage());
-            return resultView("Unable to verify credential: " + e.getMessage(), false, steps.titles(), parseVpTokens(vpTokenRaw), vpTokenRaw, idToken,
+            if (verifierSession != null) {
+                debugLogService.addVerification(
+                        verifierSession.state(),
+                        "Verification",
+                        "Verifier verification steps (failed)",
+                        "VERIFY",
+                        "verifier.verifyPresentations",
+                        Map.of(),
+                        formatVerificationSteps(steps),
+                        HttpStatus.BAD_REQUEST.value(),
+                        Map.of(),
+                        e.getMessage(),
+                        "",
+                        ""
+                );
+            }
+            LOG.info("direct_post callback verification failed state={} message={}", state, e.getMessage(), e);
+            if (wantsJson) {
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .body(Map.of("error", "Unable to verify credential: " + e.getMessage()));
+            }
+            return resultView(state, "Unable to verify credential: " + e.getMessage(), false, steps.titles(), parseVpTokens(vpTokenRaw), vpTokenRaw, idToken,
                     Map.of(), steps.details());
+        } finally {
+            verifierSessionStateStore.remove(state);
         }
     }
 
-    private ModelAndView resultView(String message, boolean success, List<String> steps, List<String> vpTokens, String vpTokenRaw,
+    private String formatVerificationSteps(VerificationSteps steps) {
+        if (steps == null || steps.details() == null || steps.details().isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        int index = 0;
+        for (VerificationSteps.StepDetail detail : steps.details()) {
+            if (detail == null) {
+                continue;
+            }
+            index++;
+            if (sb.length() > 0) {
+                sb.append("\n\n");
+            }
+            sb.append(index).append(". ").append(detail.title() != null ? detail.title() : "");
+            if (detail.detail() != null && !detail.detail().isBlank()) {
+                sb.append("\n").append(detail.detail());
+            }
+            if (detail.specLink() != null && !detail.specLink().isBlank()) {
+                sb.append("\n").append(detail.specLink());
+            }
+        }
+        return sb.toString();
+    }
+
+    private boolean wantsJson(HttpServletRequest request) {
+        if (request == null) {
+            return false;
+        }
+        String format = request.getParameter("format");
+        if (format != null && !format.isBlank()) {
+            if ("json".equalsIgnoreCase(format)) {
+                return true;
+            }
+            if ("html".equalsIgnoreCase(format)) {
+                return false;
+            }
+        }
+        String accept = request.getHeader(HttpHeaders.ACCEPT);
+        if (accept == null || accept.isBlank()) {
+            return false;
+        }
+        String lower = accept.toLowerCase();
+        if (lower.contains(MediaType.APPLICATION_JSON_VALUE)) {
+            return true;
+        }
+        if (lower.contains(MediaType.TEXT_HTML_VALUE)) {
+            return false;
+        }
+        return false;
+    }
+
+    private String currentRequestExternalUrl(HttpServletRequest request) {
+        if (request == null) {
+            return null;
+        }
+        UriComponentsBuilder builder = baseUri(request);
+        String requestUri = request.getRequestURI();
+        String contextPath = request.getContextPath();
+        String pathWithinContext = requestUri;
+        if (contextPath != null && !contextPath.isBlank() && requestUri != null && requestUri.startsWith(contextPath)) {
+            pathWithinContext = requestUri.substring(contextPath.length());
+        }
+        if (pathWithinContext != null && !pathWithinContext.isBlank()) {
+            builder.path(pathWithinContext);
+        }
+        // Note: Query string is intentionally NOT included here.
+        // For mDoc deviceAuth verification, the response_uri sent in the authorization request
+        // does not include query parameters - those are added by the wallet when posting back.
+        // The wallet signs the SessionTranscript using the original response_uri without query params.
+        return builder.build().toUriString();
+    }
+
+    private ModelAndView resultView(String state, String message, boolean success, List<String> steps, List<String> vpTokens, String vpTokenRaw,
                                     String idToken, Map<String, Object> payload, List<VerificationSteps.StepDetail> stepDetails) {
         ModelAndView mv = new ModelAndView("verifier-result");
         mv.addObject("title", success ? "Presentation Verified" : "Verification Error");
         mv.addObject("message", message);
+        mv.addObject("verificationState", state == null ? "" : state);
         mv.addObject("steps", steps);
         mv.addObject("stepDetails", stepDetails);
         List<String> tokens = vpTokens == null ? List.of() : vpTokens;
@@ -537,8 +852,20 @@ public class VerifierController {
             JsonNode node = objectMapper.readTree(jwks);
             ObjectNode meta = objectMapper.createObjectNode();
             meta.set("jwks", node);
-            meta.put("response_encryption_alg", "RSA-OAEP-256");
-            meta.put("response_encryption_enc", "A256GCM");
+            // OAuth 2.0 client metadata for encrypted responses (RFC 9101)
+            // Use ECDH-ES per HAIP Section 5-2.5
+            meta.put("authorization_encrypted_response_alg", "ECDH-ES");
+            meta.put("authorization_encrypted_response_enc", "A128GCM");
+            // VP formats for OID4VP (not vp_formats_supported)
+            ObjectNode formats = meta.putObject("vp_formats");
+            ObjectNode sdJwt = objectMapper.createObjectNode();
+            sdJwt.putArray("sd-jwt_alg_values").add("ES256");
+            sdJwt.putArray("kb-jwt_alg_values").add("ES256");
+            formats.set("dc+sd-jwt", sdJwt);
+            ObjectNode mdoc = objectMapper.createObjectNode();
+            mdoc.putArray("issuerauth_alg_values").add(-7);
+            mdoc.putArray("deviceauth_alg_values").add(-7);
+            formats.set("mso_mdoc", mdoc);
             return objectMapper.writeValueAsString(meta);
         } catch (Exception e) {
             return "";

@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "OID4VP Wallet Bridge",
+  "version": "0.1.0",
+  "description": "Bridges OpenID4VP Digital Credentials API calls to a configurable web wallet endpoint.",
+  "permissions": ["storage", "scripting", "tabs", "webRequest"],
+  "host_permissions": ["*://*/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*/realms/*/login-actions/*",
+        "*://*/realms/*/protocol/openid-connect/*",
+        "*://*/realms/*/account/*",
+        "*://*/realms/*/broker/*"
+      ],
+      "js": ["content-script.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": ["*://*/*"],
+      "js": ["wallet-content-script.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "options_page": "options.html"
+}

@@ -10,8 +10,9 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
       KC_HEALTH_ENABLED: "true"
-      KC_LOG_LEVEL: info
+      KC_LOG_LEVEL: info,de.arbeitsagentur:debug
     ports:
       - "8080:8080"
     volumes:
+      - ./keycloak-oid4vp/target/providers:/opt/keycloak/providers:ro
       - ./demo-app/config/keycloak:/opt/keycloak/data/import

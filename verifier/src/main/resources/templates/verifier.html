@@ -14,19 +14,27 @@
           <h1 style="margin-bottom: 0.25rem;">Verifier Demo</h1>
           <p style="margin:0;">Start an OID4VP same-device flow against the wallet running in this app.</p>
         </div>
-        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
-          <button type="button" class="btn secondary" id="open-dcql-request">Open DCQL request</button>
-          <a class="btn secondary" th:href="@{/}" aria-label="Go to wallet issuance UI">Go to Wallet</a>
-        </div>
-      </div>
+	        <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+	          <button type="button" class="btn secondary" id="open-dcql-request">Open DCQL request</button>
+	          <a class="btn secondary" th:href="@{/verifier/conformance}" aria-label="Open OIDF conformance UI">Conformance Suite</a>
+	          <a class="btn secondary" th:href="@{/}" aria-label="Go to wallet issuance UI">Go to Wallet</a>
+	        </div>
+	      </div>
 
-      <form class="stack" method="post" th:action="@{/verifier/start}">
+	      <form class="stack" method="post" th:action="@{/verifier/start}">
+
         <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));">
           <div>
             <label for="walletAuthEndpoint">Wallet Authorization Endpoint</label>
             <small style="color:#475569;">Override to point at a real wallet.</small>
             <input id="walletAuthEndpoint" name="walletAuthEndpoint" type="url" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;"
                    th:value="${defaultWalletAuthEndpoint}" />
+          </div>
+          <div>
+            <label for="walletAudience">Request Object aud (optional)</label>
+            <small style="color:#475569;">Defaults to <code>https://self-issued.me/v2</code> (OID4VP 1.0 static discovery).</small>
+            <input id="walletAudience" name="walletAudience" type="text" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;"
+                   th:value="${defaultWalletAudience}" />
           </div>
           <div>
             <label for="walletClientId">Wallet Client ID</label>
@@ -36,17 +44,23 @@
           <div>
             <label for="authType">Client authentication</label>
             <select id="authType" name="authType" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
-              <option value="plain" selected>Plain client_id (demo default)</option>
-              <option value="x509_hash">x509_hash (hash of certificate)</option>
-              <option value="verifier_attestation">verifier_attestation (request-signed with PoP key)</option>
+              <option value="plain" th:selected="${defaultAuthType == 'plain'}">Plain client_id (demo default)</option>
+              <option value="x509_hash" th:selected="${defaultAuthType == 'x509_hash'}">x509_hash (hash of certificate)</option>
+              <option value="x509_san_dns" th:selected="${defaultAuthType == 'x509_san_dns'}">x509_san_dns (DNS SAN in certificate)</option>
+              <option value="verifier_attestation" th:selected="${defaultAuthType == 'verifier_attestation'}">verifier_attestation (request-signed with PoP key)</option>
             </select>
             <small style="color:#475569;">Choose how the verifier authenticates; for attestation or x509 you must provide the required material.</small>
           </div>
           <div id="request-object-mode" style="display:none;">
             <label for="requestObjectMode">Request object delivery</label>
             <select id="requestObjectMode" name="requestObjectMode" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
-              <option value="request" selected>Embed in request parameter</option>
-              <option value="request_uri">Pass by reference (request_uri)</option>
+              <option value="request" th:selected="${defaultRequestObjectMode == 'request'}">Embed in request parameter</option>
+              <option value="request_uri" th:selected="${defaultRequestObjectMode == 'request_uri'}">Pass by reference (request_uri)</option>
+            </select>
+            <label for="requestUriMethod" style="margin-top:0.35rem;">Request URI method</label>
+            <select id="requestUriMethod" name="requestUriMethod" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
+              <option value="post" th:selected="${defaultRequestUriMethod == 'post'}">POST (preferred)</option>
+              <option value="get" th:selected="${defaultRequestUriMethod == 'get'}">GET</option>
             </select>
             <small style="color:#475569;">Available for x509_hash. verifier_attestation is always sent via <code>request_uri</code> hosted by this verifier.</small>
           </div>
@@ -56,6 +70,14 @@
               <option value="vp_token">vp_token</option>
               <option value="vp_token id_token">vp_token + id_token</option>
             </select>
+          </div>
+          <div>
+            <label for="responseMode">Response Mode</label>
+            <select id="responseMode" name="responseMode" style="width:100%;padding:0.65rem;border-radius:10px;border:1px solid #1f2937;">
+              <option th:selected="${defaultResponseMode == 'direct_post'}" value="direct_post">direct_post</option>
+              <option th:selected="${defaultResponseMode == 'direct_post.jwt'}" value="direct_post.jwt">direct_post.jwt (encrypted)</option>
+            </select>
+            <small style="color:#475569;">Use direct_post.jwt for conformance encrypted responses.</small>
           </div>
           <div id="auth-x509">
             <label for="walletClientCert">Client certificate (PEM)</label>
@@ -82,10 +104,15 @@
             </select>
             <small style="color:#475569;">Choose an invalid list to test failure paths.</small>
           </div>
+          <div id="verifier-info-section">
+            <label for="verifierInfo">Verifier Info (JSON)</label>
+            <textarea id="verifierInfo" name="verifierInfo" placeholder='[{"format": "registration_cert", "data": "<registration certificate JWT>"}]' style="width:100%;min-height:100px;padding:0.75rem;border-radius:10px;border:1px solid #1f2937;"></textarea>
+            <small style="color:#475569;">Optional: Array of verifier attestations (e.g., EUDI Wallet registration certificates). <a href="https://bmi.usercontent.opencode.de/eudi-wallet/eidas-2.0-architekturkonzept/content/ecosystem-architecture/trust/wallet-relying-party-authentication/" target="_blank" rel="noreferrer">See spec</a></small>
+          </div>
         </div>
 
         <div class="debug" id="binding-panel" style="margin-top:1rem;"
-             th:attr="data-default-x509-id=${defaultX509ClientId},data-default-x509-cert=${defaultX509Cert},data-default-x509-source=${defaultX509Source}">
+             th:attr="data-default-x509-id=${defaultX509ClientId},data-default-x509-san-id=${defaultX509SanClientId},data-default-x509-cert=${defaultX509Cert},data-default-x509-source=${defaultX509Source}">
           <div class="actions" style="justify-content: space-between;align-items:center;flex-wrap:wrap;">
             <div>
               <h3 style="margin:0;">Client Binding Preview</h3>
@@ -108,17 +135,17 @@
         </div>
 
         <div>
-          <div class="builder">
-            <div class="builder-header">
-              <div>
-                <label for="dcqlQueryRaw">DCQL Query</label>
-                <small style="color:#475569;">Build a dcql_query or switch to raw JSON editing.</small>
+            <div class="builder">
+              <div class="builder-header">
+                <div>
+                  <label for="dcqlQueryRaw">DCQL Query</label>
+                  <small style="color:#475569;">Build a dcql_query or switch to raw JSON editing.</small>
+                </div>
+                <div class="descriptor-actions">
+                  <button type="button" class="btn" id="dcql-mode-builder">Builder</button>
+                  <button type="button" class="btn secondary" id="dcql-mode-raw">Raw edit</button>
+                </div>
               </div>
-              <div class="descriptor-actions">
-                <button type="button" class="btn" id="dcql-mode-builder">Builder</button>
-                <button type="button" class="btn secondary" id="dcql-mode-raw">Raw edit</button>
-              </div>
-            </div>
 
             <div class="descriptor-actions" style="align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:0.65rem;">
               <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;">
@@ -155,6 +182,7 @@
                 <label for="clientMetadata">Client Metadata (encryption)</label>
                 <textarea id="clientMetadata" name="clientMetadata" placeholder='{"jwks":{...},"response_encryption_alg":"RSA-OAEP-256","response_encryption_enc":"A256GCM"}'
                           th:attr="data-default=${defaultClientMetadata}"
+                          th:text="${prefillClientMetadata}"
                           style="width:100%;min-height:140px;padding:0.75rem;border-radius:10px;border:1px solid #1f2937;"></textarea>
                 <div class="descriptor-actions" style="margin-top:0.35rem;">
                   <button type="button" class="btn secondary mini" id="load-default-client-metadata">Use verifier JWKS</button>
@@ -258,6 +286,8 @@
         const addDescriptorBtn = document.querySelector('[data-action="add-descriptor"]');
         const clientMetadataField = document.getElementById("clientMetadata");
         const clientMetadataButton = document.getElementById("load-default-client-metadata");
+        const responseModeSelect = document.getElementById("responseMode");
+        const requestUriMethodSelect = document.getElementById("requestUriMethod");
         const encryptionToggle = document.getElementById("encryption-toggle");
         const encryptionState = document.getElementById("encryption-state");
         const clientMetadataEditor = document.getElementById("client-metadata-editor");
@@ -281,6 +311,7 @@
         const bindingX509Cert = document.getElementById("binding-x509-cert");
         const copyX509CertBtn = document.getElementById("copy-x509-cert");
         const defaultX509Id = bindingPanel?.dataset.defaultX509Id || "";
+        const defaultX509SanId = bindingPanel?.dataset.defaultX509SanId || "";
         const defaultX509Cert = bindingPanel?.dataset.defaultX509Cert || "";
         const defaultX509Source = bindingPanel?.dataset.defaultX509Source || "verifier";
 
@@ -325,7 +356,7 @@
           if (bindingAuthType) bindingAuthType.textContent = mode;
           if (bindingClientId) bindingClientId.textContent = clientIdInput?.value || "(empty)";
           if (!bindingX509Details) return;
-          if (mode !== "x509_hash") {
+          if (mode !== "x509_hash" && mode !== "x509_san_dns") {
             bindingX509Details.style.display = "none";
             return;
           }
@@ -333,6 +364,13 @@
           let certText = defaultX509Cert;
           let hash = defaultX509Id && defaultX509Id.includes(":") ? defaultX509Id.split(":")[1] : "";
           let source = defaultX509Source === "verifier_self_signed" ? "Verifier self-signed (auto)" : defaultX509Source;
+          if (mode === "x509_san_dns") {
+            const sanId = clientIdInput?.value || defaultX509SanId || "";
+            if (bindingX509Hash) bindingX509Hash.textContent = sanId || "n/a";
+            if (bindingX509Source) bindingX509Source.textContent = source || "";
+            if (bindingX509Cert) bindingX509Cert.value = certText || "";
+            return;
+          }
           if (clientCertInput?.value.trim()) {
             certText = clientCertInput.value.trim();
             source = "Client-supplied PEM";
@@ -344,6 +382,14 @@
         }
 
         deriveX509Btn?.addEventListener("click", async () => {
+          const mode = authTypeSelect?.value || "plain";
+          if (mode === "x509_san_dns") {
+            if (clientIdInput && defaultX509SanId) {
+              clientIdInput.value = defaultX509SanId;
+            }
+            refreshBindingInsights();
+            return;
+          }
           if (!clientCertInput?.value.trim()) {
             alert("Paste a client certificate (PEM) first.");
             return;
@@ -365,11 +411,15 @@
 
         function refreshAuthSections() {
           const mode = authTypeSelect?.value || "plain";
-          if (authX509) authX509.style.display = mode === "x509_hash" ? "block" : "none";
+          if (authX509) authX509.style.display = mode === "x509_hash" || mode === "x509_san_dns" ? "block" : "none";
           if (authAttestation) authAttestation.style.display = mode === "verifier_attestation" ? "block" : "none";
-          const supportsRequestObject = mode === "x509_hash" || mode === "verifier_attestation";
+          if (mode === "x509_san_dns" && clientIdInput && !clientIdInput.value && defaultX509SanId) {
+            clientIdInput.value = defaultX509SanId;
+          }
+          const supportsRequestObject = mode === "x509_hash" || mode === "x509_san_dns" || mode === "verifier_attestation";
           const forceRequestUri = mode === "verifier_attestation";
           if (requestObjectModeContainer) requestObjectModeContainer.style.display = supportsRequestObject ? "block" : "none";
+          if (requestUriMethodSelect) requestUriMethodSelect.disabled = !supportsRequestObject;
           if (requestObjectMode) {
             requestObjectMode.disabled = !supportsRequestObject || forceRequestUri;
             if (!supportsRequestObject || forceRequestUri) {
@@ -865,6 +915,9 @@
           } else {
             dcqlHidden.value = dcqlRaw.value;
           }
+          if (dcqlHidden && !dcqlHidden.value) {
+            dcqlHidden.value = mode === "builder" ? JSON.stringify(buildDcqlObject()) : dcqlRaw.value;
+          }
           if (!encryptionEnabled && clientMetadataField) {
             clientMetadataField.value = "";
           } else if (encryptionEnabled && clientMetadataField && !clientMetadataField.value.trim()) {
@@ -875,6 +928,8 @@
             if (!val.startsWith("verifier_attestation:")) {
               clientIdInput.value = `verifier_attestation:${val}`;
             }
+          } else if (authTypeSelect && clientIdInput && authTypeSelect.value === "x509_san_dns" && !clientIdInput.value && defaultX509SanId) {
+            clientIdInput.value = defaultX509SanId;
           }
         });
 
@@ -887,6 +942,7 @@
         updatePreview();
         setEncryption(encryptionEnabled);
         setMode("builder");
+        refreshQueryPanels();
       })();
 
       const verificationToggle = document.getElementById("verification-debug-toggle");

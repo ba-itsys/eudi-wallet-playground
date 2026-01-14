@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet;
 
 import com.authlete.sd.Disclosure;
@@ -92,17 +107,37 @@ class WalletIntegrationTest {
 
     private static final Logger KEYCLOAK_LOG = LoggerFactory.getLogger("KeycloakContainer");
     private static final Path REALM_EXPORT = Path.of("config/keycloak/realm-export.json").toAbsolutePath();
+    private static final Path OID4VP_PROVIDERS_DIR = Path.of("../keycloak-oid4vp/target/providers").toAbsolutePath();
 
     @Container
-    static GenericContainer<?> keycloak = new GenericContainer<>("quay.io/keycloak/keycloak:26.4.5")
-            .withEnv("KEYCLOAK_ADMIN", "admin")
-            .withEnv("KEYCLOAK_ADMIN_PASSWORD", "admin")
-            .withExposedPorts(8080)
-            .withCopyFileToContainer(MountableFile.forHostPath(REALM_EXPORT),
-                    "/opt/keycloak/data/import/realm-export.json")
-            .withCommand("start-dev", "--import-realm", "--features=oid4vc-vci")
-            .withLogConsumer(new Slf4jLogConsumer(KEYCLOAK_LOG))
-            .waitingFor(Wait.forHttp("/realms/wallet-demo").forPort(8080).withStartupTimeout(Duration.ofSeconds(240)));
+    static GenericContainer<?> keycloak = createKeycloakContainer();
+
+    private static GenericContainer<?> createKeycloakContainer() {
+        GenericContainer<?> container = new GenericContainer<>("quay.io/keycloak/keycloak:26.4.5")
+                .withEnv("KEYCLOAK_ADMIN", "admin")
+                .withEnv("KEYCLOAK_ADMIN_PASSWORD", "admin")
+                .withExposedPorts(8080)
+                .withCopyFileToContainer(MountableFile.forHostPath(REALM_EXPORT),
+                        "/opt/keycloak/data/import/realm-export.json");
+
+        if (!Files.isDirectory(OID4VP_PROVIDERS_DIR)) {
+            throw new IllegalStateException("Missing Keycloak OID4VP provider directory: " + OID4VP_PROVIDERS_DIR);
+        }
+        try (Stream<Path> stream = Files.list(OID4VP_PROVIDERS_DIR)) {
+            for (Path jar : stream.filter(path -> path.getFileName().toString().endsWith(".jar")).toList()) {
+                container.withCopyFileToContainer(
+                        MountableFile.forHostPath(jar),
+                        "/opt/keycloak/providers/" + jar.getFileName());
+            }
+        } catch (IOException e) {
+            throw new IllegalStateException("Failed to prepare Keycloak provider jars", e);
+        }
+
+        return container
+                .withCommand("start-dev", "--import-realm", "--features=oid4vc-vci")
+                .withLogConsumer(new Slf4jLogConsumer(KEYCLOAK_LOG))
+                .waitingFor(Wait.forHttp("/realms/wallet-demo").forPort(8080).withStartupTimeout(Duration.ofSeconds(420)));
+    }
 
     private static Path credentialDir;
     private static Path keyFile;
@@ -261,7 +296,7 @@ class WalletIntegrationTest {
 
             HttpPost mockIssue = new HttpPost(base.resolve("/api/mock-issue"));
             mockIssue.setEntity(new UrlEncodedFormEntity(
-                    List.of(new BasicNameValuePair("configurationId", "mock-pid-mdoc")),
+                    List.of(new BasicNameValuePair("configurationId", "eu.europa.ec.eudi.pid_mso_mdoc")),
                     StandardCharsets.UTF_8));
             try (CloseableHttpResponse issueResponse = client.execute(mockIssue, context)) {
                 assertThat(issueResponse.getCode()).isEqualTo(200);
@@ -272,6 +307,7 @@ class WalletIntegrationTest {
                       "credentials": [{
                         "id": "mdoc-proof",
                         "format": "mso_mdoc",
+                        "meta": { "doctype_value": "eu.europa.ec.eudi.pid.1" },
                         "claims": [
                           { "path": ["given_name"] },
                           { "path": ["document_number"] }
@@ -295,7 +331,7 @@ class WalletIntegrationTest {
                     null,
                     null,
                     Map.of(),
-                    "urn:example:pid:mock",
+                    "eu.europa.ec.eudi.pid.1",
                     null,
                     "trust-list-mock");
 
@@ -304,15 +340,14 @@ class WalletIntegrationTest {
             JsonNode vpTokenJson = objectMapper.readTree(vpTokenValue);
             Map.Entry<String, JsonNode> first = ((ObjectNode) vpTokenJson).properties().iterator().next();
             JsonNode tokenNode = first.getValue();
-            String outerToken = tokenNode.isArray() ? tokenNode.get(0).asText() : tokenNode.asText();
-            String innerMdoc = SignedJWT.parse(outerToken).getJWTClaimsSet().getStringClaim("vp_token");
+            String deviceResponse = tokenNode.isArray() ? tokenNode.get(0).asText() : tokenNode.asText();
             MdocParser parser = new MdocParser();
-            Map<String, Object> claims = parser.extractClaims(innerMdoc);
+            Map<String, Object> claims = parser.extractClaims(deviceResponse);
             assertThat(claims)
-                    .containsEntry("given_name", "Alice")
+                    .containsEntry("given_name", "Erika")
                     .containsKey("document_number")
                     .doesNotContainKey("family_name");
-            assertThat(parser.extractDocType(innerMdoc)).isEqualTo("urn:example:pid:mock");
+            assertThat(parser.extractDocType(deviceResponse)).isEqualTo("eu.europa.ec.eudi.pid.1");
 
             HttpPost callbackPost = new HttpPost(presentationForm.action());
             callbackPost.setEntity(new UrlEncodedFormEntity(toParams(presentationForm.fields()), StandardCharsets.UTF_8));
@@ -345,12 +380,13 @@ class WalletIntegrationTest {
 
             HttpPost mockIssue = new HttpPost(base.resolve("/api/mock-issue"));
             mockIssue.setEntity(new UrlEncodedFormEntity(
-                    List.of(new BasicNameValuePair("configurationId", "mock-pid-mdoc")),
+                    List.of(new BasicNameValuePair("configurationId", "eu.europa.ec.eudi.pid_mso_mdoc")),
                     StandardCharsets.UTF_8));
             try (CloseableHttpResponse issueResponse = client.execute(mockIssue, context)) {
                 assertThat(issueResponse.getCode()).isEqualTo(200);
             }
 
+            // DCQL without format constraint - should select mDoc when that's the only matching credential
             String dcql = """
                     {
                       "credentials": [{
@@ -378,7 +414,7 @@ class WalletIntegrationTest {
                     null,
                     null,
                     Map.of(),
-                    "urn:example:pid:mock",
+                    "eu.europa.ec.eudi.pid.1",  // mDoc uses doctype, not vct
                     null,
                     "trust-list-mock");
 
@@ -387,15 +423,14 @@ class WalletIntegrationTest {
             JsonNode vpTokenJson = objectMapper.readTree(vpTokenValue);
             Map.Entry<String, JsonNode> first = ((ObjectNode) vpTokenJson).properties().iterator().next();
             JsonNode tokenNode = first.getValue();
-            String outerToken = tokenNode.isArray() ? tokenNode.get(0).asText() : tokenNode.asText();
-            String innerMdoc = SignedJWT.parse(outerToken).getJWTClaimsSet().getStringClaim("vp_token");
+            String deviceResponse = tokenNode.isArray() ? tokenNode.get(0).asText() : tokenNode.asText();
             MdocParser parser = new MdocParser();
-            Map<String, Object> claims = parser.extractClaims(innerMdoc);
+            Map<String, Object> claims = parser.extractClaims(deviceResponse);
             assertThat(claims)
-                    .containsEntry("given_name", "Alice")
+                    .containsEntry("given_name", "Erika")
                     .containsKey("document_number")
                     .doesNotContainKey("family_name");
-            assertThat(parser.extractDocType(innerMdoc)).isEqualTo("urn:example:pid:mock");
+            assertThat(parser.extractDocType(deviceResponse)).isEqualTo("eu.europa.ec.eudi.pid.1");
 
             HttpPost callbackPost = new HttpPost(presentationForm.action());
             callbackPost.setEntity(new UrlEncodedFormEntity(toParams(presentationForm.fields()), StandardCharsets.UTF_8));
@@ -413,9 +448,9 @@ class WalletIntegrationTest {
     @Test
     void mockOfferMdocPastedIntoWalletIssuesCredential() throws Exception {
         Map<String, Object> offerRequest = Map.of(
-                "configurationId", "mock-pid-mdoc",
+                "configurationId", "eu.europa.ec.eudi.pid_mso_mdoc",
                 "format", "mso_mdoc",
-                "vct", "urn:example:pid:mock",
+                "vct", "eu.europa.ec.eudi.pid.1",
                 "claims", List.of(Map.of("name", "given_name", "value", "Charlie"))
         );
         Map<String, Object> offerResponse = restClient.post()
@@ -440,7 +475,7 @@ class WalletIntegrationTest {
             HttpPost mockIssue = new HttpPost(URI.create("http://localhost:" + serverPort + "/mock-issue"));
             mockIssue.setEntity(new UrlEncodedFormEntity(
                     List.of(
-                            new BasicNameValuePair("configurationId", "mock-pid-mdoc"),
+                            new BasicNameValuePair("configurationId", "eu.europa.ec.eudi.pid_mso_mdoc"),
                             new BasicNameValuePair("credentialOffer", offerJson)
                     ),
                     StandardCharsets.UTF_8));
@@ -583,7 +618,7 @@ class WalletIntegrationTest {
                     null,
                     null,
                     Map.of(),
-                    "urn:example:pid:mock",
+                    "urn:eudi:pid:1",
                     null,
                     "trust-list-mock"
             );
@@ -607,8 +642,10 @@ class WalletIntegrationTest {
             HttpPost callbackPost = new HttpPost(form.action());
             callbackPost.setEntity(new UrlEncodedFormEntity(toParams(form.fields()), StandardCharsets.UTF_8));
             try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
-                assertThat(verifierResult.getCode()).isEqualTo(200);
                 String body = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
+                assertThat(verifierResult.getCode())
+                        .withFailMessage("Verifier callback failed. Status %s Body:%n%s", verifierResult.getCode(), body)
+                        .isEqualTo(200);
                 assertThat(body).contains("Verified credential");
             }
         }
@@ -705,6 +742,81 @@ class WalletIntegrationTest {
                 assertThat(verifierResult.getCode()).isEqualTo(400);
                 String body = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
                 assertThat(body).contains("access_denied").contains("User denied presentation");
+            }
+        }
+    }
+
+    @Test
+    void noMatchingCredentialShowsErrorPage() throws Exception {
+        URI base = URI.create("http://localhost:" + serverPort);
+        BasicCookieStore cookieStore = new BasicCookieStore();
+        HttpClientContext context = HttpClientContext.create();
+        context.setCookieStore(cookieStore);
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setRedirectsEnabled(false)
+                .setCookieSpec(StandardCookieSpec.RELAXED)
+                .build();
+        try (CloseableHttpClient client = HttpClients.custom()
+                .setDefaultCookieStore(cookieStore)
+                .setDefaultRequestConfig(requestConfig)
+                .build()) {
+            authenticateThroughLogin(client, context, base);
+            String userId = fetchUserId(client, context, base);
+            // Delete all credentials so there are no matches
+            credentialStore.deleteAllCredentials(userId);
+
+            // Request a credential that doesn't exist
+            String dcqlQuery = objectMapper.writeValueAsString(Map.of(
+                    "credentials", List.of(
+                            Map.of(
+                                    "id", "nonexistent-credential",
+                                    "format", "dc+sd-jwt",
+                                    "claims", List.of(
+                                            Map.of("path", List.of("some_nonexistent_claim"))
+                                    )
+                            )
+                    )
+            ));
+            URI walletAuth = startPresentationRequest(client, context, base, dcqlQuery, null, null,
+                    null, null, null, null, null);
+
+            // The wallet should show the no-match error page instead of auto-submitting
+            HtmlPage errorPage = fetchHtmlFollowingRedirects(client, context, walletAuth);
+            String pageText = errorPage.document().text();
+            assertThat(pageText)
+                    .as("Expected no-match error page to be shown")
+                    .contains("No matching credential")
+                    .contains("wallet does not contain");
+
+            // Find the form and submit button
+            Element errorForm = errorPage.document().selectFirst("form");
+            assertThat(errorForm)
+                    .withFailMessage("No-match error page should have a form. Body: %s", pageText)
+                    .isNotNull();
+
+            // Extract form fields and action
+            String formAction = errorForm.attr("action");
+            assertThat(formAction).isNotBlank();
+
+            Map<String, String> formFields = new LinkedHashMap<>();
+            for (Element input : errorForm.select("input")) {
+                String name = input.attr("name");
+                String value = input.attr("value");
+                if (name != null && !name.isBlank()) {
+                    formFields.put(name, value != null ? value : "");
+                }
+            }
+
+            assertThat(formFields).containsKey("error");
+            assertThat(formFields.get("error")).isEqualTo("access_denied");
+
+            // Submit the form to the verifier callback
+            HttpPost callbackPost = new HttpPost(formAction);
+            callbackPost.setEntity(new UrlEncodedFormEntity(toParams(formFields), StandardCharsets.UTF_8));
+            try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
+                assertThat(verifierResult.getCode()).isEqualTo(400);
+                String body = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
+                assertThat(body).contains("access_denied");
             }
         }
     }
@@ -870,14 +982,14 @@ class WalletIntegrationTest {
             JsonNode vpTokenJson = objectMapper.readTree(vpTokenValue);
             Map.Entry<String, JsonNode> first = ((ObjectNode) vpTokenJson).properties().iterator().next();
             JsonNode firstTokenNode = first.getValue();
-            String outerToken = firstTokenNode.isArray() ? firstTokenNode.get(0).asText() : firstTokenNode.asText();
-            String innerVp = SignedJWT.parse(outerToken).getJWTClaimsSet().getStringClaim("vp_token");
-            assertThat(innerVp).isNotBlank();
-            List<String> disclosures = Stream.of(innerVp.split("~"))
+            String sdJwtPresentation = firstTokenNode.isArray() ? firstTokenNode.get(0).asText() : firstTokenNode.asText();
+            assertThat(sdJwtPresentation).isNotBlank();
+            List<String> disclosures = Stream.of(sdJwtPresentation.split("~"))
                     .skip(1)
                     .filter(s -> s != null && !s.isBlank())
+                    .filter(s -> !s.contains(".")) // ignore appended KB-JWT
                     .toList();
-            String signedPart = innerVp.contains("~") ? innerVp.split("~")[0] : innerVp;
+            String signedPart = sdJwtPresentation.contains("~") ? sdJwtPresentation.split("~")[0] : sdJwtPresentation;
             String[] innerParts = signedPart.split("\\.");
             JsonNode subject = objectMapper.createObjectNode();
             if (innerParts.length >= 2) {
@@ -997,8 +1109,8 @@ class WalletIntegrationTest {
             String primaryToken = vpTokenJson.get("primary").get(0).asText();
             String secondaryToken = vpTokenJson.get("secondary").get(0).asText();
             assertThat(primaryToken).isNotEqualTo(secondaryToken);
-            assertThat(SignedJWT.parse(primaryToken).getJWTClaimsSet().getStringClaim("vp_token")).isEqualTo("token-one");
-            assertThat(SignedJWT.parse(secondaryToken).getJWTClaimsSet().getStringClaim("vp_token")).isEqualTo("token-two");
+            assertThat(primaryToken).isEqualTo("token-one");
+            assertThat(secondaryToken).isEqualTo("token-two");
         }
     }
 
@@ -1154,13 +1266,34 @@ class WalletIntegrationTest {
                 assertThat(startResponse.getCode()).isEqualTo(302);
                 walletAuth = resolveRedirect(base, startResponse.getFirstHeader("Location").getValue());
             }
-            HtmlPage document = fetchHtmlFollowingRedirects(client, context, walletAuth);
+            fetchHtmlFollowingRedirects(client, context, walletAuth);
             HttpPost consentPost = new HttpPost(base.resolve("/oid4vp/consent"));
             consentPost.setEntity(new UrlEncodedFormEntity(List.of(new BasicNameValuePair("decision", "accept")), StandardCharsets.UTF_8));
             try (CloseableHttpResponse consentResponse = client.execute(consentPost, context)) {
                 String body = new String(consentResponse.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
                 assertThat(consentResponse.getCode()).isEqualTo(200);
-                assertThat(body).contains("No matching credential found");
+                Document submitPage = Jsoup.parse(body, base.toString());
+                Element submitForm = submitPage.selectFirst("form");
+                assertThat(submitForm).isNotNull();
+                Map<String, String> submitFields = new LinkedHashMap<>();
+                for (Element input : submitForm.select("input[name]")) {
+                    String name = input.attr("name");
+                    if (name == null || name.isBlank()) {
+                        continue;
+                    }
+                    submitFields.put(name, input.attr("value"));
+                }
+                assertThat(submitFields.get("error")).isEqualTo("access_denied");
+                assertThat(submitFields.get("error_description")).containsAnyOf("No matching credential", "Could not select matching credentials");
+
+                URI callback = resolveRedirect(base, submitForm.attr("action"));
+                HttpPost callbackPost = new HttpPost(callback);
+                callbackPost.setEntity(new UrlEncodedFormEntity(toParams(submitFields), StandardCharsets.UTF_8));
+                try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
+                    assertThat(verifierResult.getCode()).isEqualTo(400);
+                    String verifierBody = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
+                    assertThat(verifierBody).contains("access_denied");
+                }
             }
         }
     }
@@ -1222,15 +1355,58 @@ class WalletIntegrationTest {
             try (CloseableHttpResponse issueResponse = client.execute(new HttpPost(base.resolve("/api/issue")), context)) {
                 assertThat(issueResponse.getCode()).isEqualTo(200);
             }
-            SelfSignedMaterial cert = generateSelfSignedCert();
-            String clientId = "x509_hash:" + cert.hash();
+            String clientId = "x509_hash:" + x509HashFromPem(verifierKeyService.signingCertificatePem());
             String dcql = fetchDefaultDcqlQuery(client, context, base);
             URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
-                    clientId, "x509_hash", cert.combinedPem(), null, null);
+                    clientId, "x509_hash", null, null, null);
             List<NameValuePair> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8);
             List<String> paramNames = params.stream().map(NameValuePair::getName).toList();
             assertThat(paramNames).contains("client_id").contains("request");
             assertThat(paramNames).doesNotContain("dcql_query", "nonce", "response_mode", "response_uri", "state", "client_metadata", "request_uri");
+            PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
+                    List.of("given_name"), null, false, Map.of(), null);
+            HttpPost callbackPost = new HttpPost(form.action());
+            callbackPost.setEntity(new UrlEncodedFormEntity(toParams(form.fields()), StandardCharsets.UTF_8));
+            try (CloseableHttpResponse verifierResult = client.execute(callbackPost, context)) {
+                String body = new String(verifierResult.getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8);
+                assertThat(verifierResult.getCode())
+                        .withFailMessage("Verifier callback failed. Body:%n%s", body)
+                        .isEqualTo(200);
+                assertThat(body).contains("Verified credential");
+            }
+        }
+    }
+
+    @Test
+    void presentationWithX509SanDnsAuth() throws Exception {
+        URI base = URI.create("http://verifier.localtest.me:" + serverPort);
+        BasicCookieStore cookieStore = new BasicCookieStore();
+        HttpClientContext context = HttpClientContext.create();
+        context.setCookieStore(cookieStore);
+        RequestConfig requestConfig = RequestConfig.custom()
+                .setRedirectsEnabled(false)
+                .setCookieSpec(StandardCookieSpec.RELAXED)
+                .build();
+        try (CloseableHttpClient client = HttpClients.custom()
+                .setDefaultCookieStore(cookieStore)
+                .setDefaultRequestConfig(requestConfig)
+                .build()) {
+            authenticateThroughLogin(client, context, base);
+            try (CloseableHttpResponse issueResponse = client.execute(new HttpPost(base.resolve("/api/issue")), context)) {
+                assertThat(issueResponse.getCode()).isEqualTo(200);
+            }
+            String dcql = fetchDefaultDcqlQuery(client, context, base);
+            URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
+                    null, "x509_san_dns", null, null, null);
+            List<NameValuePair> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8);
+            List<String> paramNames = params.stream().map(NameValuePair::getName).toList();
+            assertThat(paramNames).contains("client_id").contains("request");
+            String clientId = params.stream()
+                    .filter(p -> "client_id".equals(p.getName()))
+                    .map(NameValuePair::getValue)
+                    .findFirst()
+                    .orElse("");
+            assertThat(clientId).startsWith("x509_san_dns:");
             PresentationForm form = continuePresentationFlow(client, context, base, walletAuth, "accept",
                     List.of("given_name"), null, false, Map.of(), null);
             HttpPost callbackPost = new HttpPost(form.action());
@@ -1305,11 +1481,10 @@ class WalletIntegrationTest {
             try (CloseableHttpResponse issueResponse = client.execute(new HttpPost(base.resolve("/api/issue")), context)) {
                 assertThat(issueResponse.getCode()).isEqualTo(200);
             }
-            SelfSignedMaterial cert = generateSelfSignedCert();
-            String clientId = "x509_hash:" + cert.hash();
+            String clientId = "x509_hash:" + x509HashFromPem(verifierKeyService.signingCertificatePem());
             String dcql = fetchDefaultDcqlQuery(client, context, base);
             URI walletAuth = startPresentationRequest(client, context, base, dcql, List.of("given_name"), null,
-                    clientId, "x509_hash", cert.combinedPem(), null, null, "request_uri");
+                    clientId, "x509_hash", null, null, null, "request_uri");
             List<String> params = URLEncodedUtils.parse(walletAuth, StandardCharsets.UTF_8).stream()
                     .map(NameValuePair::getName)
                     .toList();
@@ -1811,12 +1986,12 @@ class WalletIntegrationTest {
                 }
             }
             if (expectEncrypted) {
-                String vpTokenValue = fields.get("vp_token");
-                assertThat(vpTokenValue).isNotBlank();
-                List<String> vpTokens = parseVpTokens(vpTokenValue);
-                assertThat(vpTokens)
-                        .withFailMessage("Expected encrypted vp_token but got %s", vpTokens)
-                        .allMatch(this::looksLikeJwe);
+                String encryptedResponse = fields.get("response");
+                assertThat(encryptedResponse).as("Expected direct_post.jwt response parameter").isNotBlank();
+                assertThat(looksLikeJwe(encryptedResponse)).isTrue();
+                String decrypted = verifierKeyService.decrypt(encryptedResponse);
+                JsonNode decryptedJson = objectMapper.readTree(decrypted);
+                assertThat(decryptedJson.hasNonNull("vp_token")).isTrue();
             }
             URI action = resolveRedirect(base, presentationForm.attr("action"));
             return new PresentationForm(action, fields);
@@ -1827,10 +2002,16 @@ class WalletIntegrationTest {
             throws IOException {
         HttpGet request = new HttpGet(uri);
         try (ResponseWithUri response = executeFollowRedirects(client, context, request)) {
-            assertThat(response.response().getCode()).isEqualTo(200);
+            int code = response.response().getCode();
+            String body = response.response().getEntity() != null
+                    ? new String(response.response().getEntity().getContent().readAllBytes(), StandardCharsets.UTF_8)
+                    : "";
+            assertThat(code)
+                    .withFailMessage("Expected HTTP 200 at %s but got %s. Body:%n%s", response.uri(), code, body)
+                    .isEqualTo(200);
             return new HtmlPage(
                     response.uri(),
-                    Jsoup.parse(response.response().getEntity().getContent(), StandardCharsets.UTF_8.name(), response.uri().toString())
+                    Jsoup.parse(body, response.uri().toString())
             );
         }
     }
@@ -2036,6 +2217,16 @@ class WalletIntegrationTest {
         byte[] random = new byte[24];
         new SecureRandom().nextBytes(random);
         return Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+    }
+
+    private String x509HashFromPem(String certificatePem) throws Exception {
+        String body = certificatePem
+                .replaceAll("-----BEGIN CERTIFICATE-----", "")
+                .replaceAll("-----END CERTIFICATE-----", "")
+                .replaceAll("\\s+", "");
+        byte[] der = Base64.getMimeDecoder().decode(body);
+        return Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(MessageDigest.getInstance("SHA-256").digest(der));
     }
 
     private SelfSignedMaterial generateSelfSignedCert() throws Exception {

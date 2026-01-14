@@ -1,19 +1,32 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.mockissuer.config;
 
-import de.arbeitsagentur.keycloak.wallet.issuance.config.WalletProperties;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.http.HttpStatus;
-import org.springframework.stereotype.Component;
-import org.springframework.util.StringUtils;
-import org.springframework.web.server.ResponseStatusException;
 import tools.jackson.core.JacksonException;
 import tools.jackson.core.type.TypeReference;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import de.arbeitsagentur.keycloak.wallet.issuance.config.WalletProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.util.StringUtils;
+import org.springframework.web.server.ResponseStatusException;
 
-import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -103,31 +116,90 @@ public class MockIssuerConfigurationStore {
         }
     }
 
+    public MockIssuerProperties.CredentialConfiguration updateConfiguration(String id, MockIssuerProperties.CredentialConfiguration raw) {
+        if (!StringUtils.hasText(id)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Configuration id is required");
+        }
+        MockIssuerProperties.CredentialConfiguration normalized = normalize(raw);
+        validate(normalized);
+        lock.writeLock().lock();
+        try {
+            // Check if this is a user configuration (editable)
+            int userIndex = -1;
+            for (int i = 0; i < userConfigurations.size(); i++) {
+                if (userConfigurations.get(i).id().equalsIgnoreCase(id)) {
+                    userIndex = i;
+                    break;
+                }
+            }
+            if (userIndex < 0) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot modify built-in configurations");
+            }
+            // Check if id changed and new id already exists
+            if (!id.equalsIgnoreCase(normalized.id())) {
+                boolean newIdExists = configurations.stream()
+                        .anyMatch(cfg -> cfg.id().equalsIgnoreCase(normalized.id()));
+                if (newIdExists) {
+                    throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Configuration id already exists");
+                }
+            }
+            // Update user configuration
+            userConfigurations.set(userIndex, normalized);
+            // Rebuild combined list
+            configurations.clear();
+            configurations.addAll(builtInConfigurations);
+            configurations.addAll(userConfigurations);
+            persist();
+            return normalized;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    public boolean deleteConfiguration(String id) {
+        if (!StringUtils.hasText(id)) {
+            return false;
+        }
+        lock.writeLock().lock();
+        try {
+            // Check if this is a user configuration (deletable)
+            boolean removed = userConfigurations.removeIf(cfg -> cfg.id().equalsIgnoreCase(id));
+            if (!removed) {
+                throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Cannot delete built-in configurations");
+            }
+            // Rebuild combined list
+            configurations.clear();
+            configurations.addAll(builtInConfigurations);
+            configurations.addAll(userConfigurations);
+            persist();
+            return true;
+        } finally {
+            lock.writeLock().unlock();
+        }
+    }
+
+    public boolean isUserConfiguration(String id) {
+        if (!StringUtils.hasText(id)) {
+            return false;
+        }
+        lock.readLock().lock();
+        try {
+            return userConfigurations.stream().anyMatch(cfg -> cfg.id().equalsIgnoreCase(id));
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
+
     public Path userConfigurationFile() {
         return userConfigurationFile;
     }
 
     private Optional<List<MockIssuerProperties.CredentialConfiguration>> loadFromFile(Path file) {
-        if (file == null) {
+        if (file == null || !Files.exists(file)) {
             return Optional.empty();
         }
-        JsonNode node = null;
-        boolean fromClasspath = false;
         try {
-            if (Files.exists(file)) {
-                node = objectMapper.readTree(file.toFile());
-            } else {
-                ClassPathResource resource = new ClassPathResource(file.toString());
-                if (resource.exists()) {
-                    fromClasspath = true;
-                    try (InputStream in = resource.getInputStream()) {
-                        node = objectMapper.readTree(in);
-                    }
-                } else {
-                    LOG.warn("Mock issuer configuration file {} not found on filesystem or classpath", file);
-                    return Optional.empty();
-                }
-            }
+            JsonNode node = objectMapper.readTree(file.toFile());
             JsonNode configsNode = node.isObject() ? node.get("configurations") : node;
             if (configsNode == null || !configsNode.isArray()) {
                 LOG.warn("Ignoring mock issuer configuration file {} because it does not contain an array", file);
@@ -140,16 +212,9 @@ public class MockIssuerConfigurationStore {
                 LOG.warn("Mock issuer configuration file {} is present but empty", file);
                 return Optional.empty();
             }
-            LOG.info("Loaded {} mock issuer credential configuration(s) from {}{}",
-                    parsed.size(),
-                    fromClasspath ? "classpath:" : "",
-                    file);
             return Optional.of(parsed);
         } catch (JacksonException e) {
             LOG.warn("Failed to read mock issuer configurations from {}", file, e);
-            return Optional.empty();
-        } catch (Exception e) {
-            LOG.warn("Failed to load mock issuer configuration file {}", file, e);
             return Optional.empty();
         }
     }

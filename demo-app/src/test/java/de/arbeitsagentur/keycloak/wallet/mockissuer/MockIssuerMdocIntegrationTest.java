@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.mockissuer;
 
 import COSE.AlgorithmID;
@@ -33,6 +48,7 @@ import org.springframework.web.client.RestClient;
 
 import java.net.URI;
 import java.time.Instant;
+import java.util.Base64;
 import java.util.Date;
 import java.util.List;
 import java.util.Map;
@@ -71,9 +87,9 @@ class MockIssuerMdocIntegrationTest {
     @Test
     void issuesMdocCredentialEndToEnd() throws Exception {
         Map<String, Object> offerRequest = Map.of(
-                "configurationId", "mock-pid-mdoc",
+                "configurationId", "eu.europa.ec.eudi.pid_mso_mdoc",
                 "format", "mso_mdoc",
-                "vct", "urn:example:pid:mock",
+                "vct", "eu.europa.ec.eudi.pid.1",
                 "claims", List.of(Map.of("name", "given_name", "value", "Alice"))
         );
 
@@ -103,7 +119,7 @@ class MockIssuerMdocIntegrationTest {
         String proof = buildProof(baseUrl("/mock-issuer"), cNonce);
 
         Map<String, Object> credentialRequest = Map.of(
-                "credential_configuration_id", "mock-pid-mdoc",
+                "credential_configuration_id", "eu.europa.ec.eudi.pid_mso_mdoc",
                 "format", "mso_mdoc",
                 "proof", Map.of("proof_type", "jwt", "jwt", proof)
         );
@@ -126,21 +142,15 @@ class MockIssuerMdocIntegrationTest {
         assertThat(credentials).isNotEmpty();
         Map<String, Object> first = credentials.get(0);
         assertThat(first.get("format")).isEqualTo("mso_mdoc");
-        String hex = first.get("credential").toString();
-        assertThat(hex).matches("^[0-9a-fA-F]+$");
+        String token = first.get("credential").toString();
+        assertThat(token).matches("^[A-Za-z0-9_-]+$");
 
         MdocParser parser = new MdocParser();
-        Map<String, Object> claims = parser.extractClaims(hex);
+        Map<String, Object> claims = parser.extractClaims(token);
         assertThat(claims).containsEntry("given_name", "Alice");
 
-        byte[] decoded = HexUtils.decode(hex);
-        CBORObject mdoc = CBORObject.DecodeFromBytes(decoded);
-        assertThat(mdoc.get("version").AsString()).isEqualTo("1.0");
-        CBORObject documents = mdoc.get("documents");
-        assertThat(documents).isNotNull();
-        CBORObject doc = documents.get(0);
-        assertThat(doc.get("docType").AsString()).isEqualTo("urn:example:pid:mock");
-        CBORObject issuerSigned = doc.get("issuerSigned");
+        byte[] decoded = Base64.getUrlDecoder().decode(token);
+        CBORObject issuerSigned = CBORObject.DecodeFromBytes(decoded);
         byte[] issuerAuth = HexUtils.toBytes(issuerSigned.get("issuerAuth"));
         Sign1Message sign1 = (Sign1Message) Sign1Message.DecodeFromBytes(issuerAuth);
         OneKey publicKey = toCosePublicKey(mockIssuerKeyService.signingKey());
@@ -153,7 +163,7 @@ class MockIssuerMdocIntegrationTest {
             payload = CBORObject.DecodeFromBytes(payload.GetByteString());
         }
         CBORObject mso = payload;
-        assertThat(mso.get("docType").AsString()).isEqualTo("urn:example:pid:mock");
+        assertThat(mso.get("docType").AsString()).isEqualTo("eu.europa.ec.eudi.pid.1");
         assertThat(mso.get("valueDigests")).isNotNull();
     }
 

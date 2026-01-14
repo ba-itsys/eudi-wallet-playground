@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.issuance.web;
 
 import de.arbeitsagentur.keycloak.wallet.common.storage.CredentialStore;
@@ -94,6 +109,13 @@ public class WalletPageController {
         TokenSet tokens = session.getTokenSet();
         if (tokens != null && tokens.needsRefresh()) {
             tokens = oidcClient.refreshTokens(tokens);
+            if (tokens == null) {
+                // Token refresh failed - clear session
+                session.setTokenSet(null);
+                session.setUserProfile(null);
+                model.addAttribute("error", "Session expired. Please sign in again.");
+                return wallet(model, httpSession);
+            }
             session.setTokenSet(tokens);
         }
         if (tokens == null) {
@@ -199,7 +221,7 @@ public class WalletPageController {
             if (sdJwtParser.isSdJwt(raw)) {
                 return sdJwtParser.extractDisclosedClaims(raw);
             }
-            if (mdocParser.isHex(raw)) {
+            if (mdocParser.isMdoc(raw)) {
                 return mdocParser.extractClaims(raw);
             }
             String[] parts = raw.split("\\.");
@@ -242,7 +264,7 @@ public class WalletPageController {
         if (disclosures != null && !disclosures.isEmpty()) {
             return "dc+sd-jwt";
         }
-        if (raw != null && mdocParser.isHex(raw) && raw.length() > 32) {
+        if (raw != null && mdocParser.isMdoc(raw) && raw.length() > 32) {
             return "mso_mdoc";
         }
         if (raw != null) {
@@ -271,7 +293,7 @@ public class WalletPageController {
     }
 
     private String decodeMdoc(String raw) {
-        if (!mdocParser.isHex(raw)) {
+        if (!mdocParser.isMdoc(raw)) {
             return null;
         }
         try {
@@ -293,7 +315,7 @@ public class WalletPageController {
             if (sdJwtParser.isSdJwt(raw)) {
                 return sdJwtParser.extractVct(raw);
             }
-            if (mdocParser.isHex(raw)) {
+            if (mdocParser.isMdoc(raw)) {
                 return mdocParser.extractDocType(raw);
             }
             String[] parts = raw.split("\\.");

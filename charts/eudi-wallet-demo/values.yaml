@@ -1,5 +1,8 @@
 wallet:
   publicBaseUrl: ""
+  conformance:
+    baseUrl: "https://demo.certification.openid.net"
+    apiKey: ""
   image:
     repository: ""
     tag: ""

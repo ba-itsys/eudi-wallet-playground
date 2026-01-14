@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.issuance.oidc;
 
 import de.arbeitsagentur.keycloak.wallet.common.debug.DebugLogService;
@@ -94,9 +109,13 @@ public class OidcClient {
         return parseTokenSet(json);
     }
 
+    /**
+     * Refreshes tokens using the refresh token.
+     * Returns null if the refresh fails (e.g., token expired/revoked), signaling that the session should be cleared.
+     */
     public TokenSet refreshTokens(TokenSet existing) {
-        if (existing.refreshToken() == null) {
-            return existing;
+        if (existing == null || existing.refreshToken() == null) {
+            return null;
         }
         HttpHeaders headers = new HttpHeaders();
         headers.setContentType(MediaType.APPLICATION_FORM_URLENCODED);
@@ -106,19 +125,25 @@ public class OidcClient {
         body.add("client_secret", properties.clientSecret());
         body.add("refresh_token", existing.refreshToken());
         HttpEntity<MultiValueMap<String, String>> request = new HttpEntity<>(body, headers);
-        ResponseEntity<JsonNode> response = restTemplate.postForEntity(properties.tokenEndpoint(), request, JsonNode.class);
-        logIssuance("Token endpoint (refresh_token)",
-                "POST",
-                properties.tokenEndpoint(),
-                headers.toSingleValueMap(),
-                formEncode(body),
-                response.getStatusCode().value(),
-                response.getHeaders().toSingleValueMap(),
-                prettyJson(response.getBody()),
-                "https://openid.net/specs/openid-connect-core-1_0.html#TokenEndpoint",
-                decodeJwt(response.getBody() != null ? response.getBody().path("access_token").asText(null) : null),
-                "OIDC Login");
-        return parseTokenSet(response.getBody());
+        try {
+            ResponseEntity<JsonNode> response = restTemplate.postForEntity(properties.tokenEndpoint(), request, JsonNode.class);
+            logIssuance("Token endpoint (refresh_token)",
+                    "POST",
+                    properties.tokenEndpoint(),
+                    headers.toSingleValueMap(),
+                    formEncode(body),
+                    response.getStatusCode().value(),
+                    response.getHeaders().toSingleValueMap(),
+                    prettyJson(response.getBody()),
+                    "https://openid.net/specs/openid-connect-core-1_0.html#TokenEndpoint",
+                    decodeJwt(response.getBody() != null ? response.getBody().path("access_token").asText(null) : null),
+                    "OIDC Login");
+            return parseTokenSet(response.getBody());
+        } catch (Exception e) {
+            // Token refresh failed - likely expired or revoked
+            // Return null to signal that the session should be cleared
+            return null;
+        }
     }
 
     private TokenSet parseTokenSet(JsonNode json) {

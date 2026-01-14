@@ -1,5 +1,21 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.common.sdjwt;
 
+import com.authlete.sd.Disclosure;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
 import com.nimbusds.jose.JOSEObjectType;
@@ -11,8 +27,8 @@ import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import de.arbeitsagentur.keycloak.wallet.common.sdjwt.CredentialBuildResult;
-import de.arbeitsagentur.keycloak.wallet.common.sdjwt.TrustedIssuerResolver;
+import de.arbeitsagentur.keycloak.wallet.common.credential.CredentialBuildResult;
+import de.arbeitsagentur.keycloak.wallet.common.credential.TrustedIssuerResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -73,17 +89,40 @@ class SdJwtVerifierTest {
         assertThat(claims).containsEntry("key_binding_jwt", keyBindingJwt);
     }
 
+    @Test
+    void verifyDisclosuresSupportsNestedArrayElements() throws Exception {
+        String hashAlg = "sha-256";
+        Disclosure element = new Disclosure("FR");
+        String elementDigest = element.digest(hashAlg);
+        Disclosure outer = new Disclosure("nationalities", List.of(Map.of("...", elementDigest)));
+        String outerDigest = outer.digest(hashAlg);
+
+        SignedJWT jwt = signPayload(Map.of(
+                "_sd_alg", hashAlg,
+                "_sd", List.of(outerDigest)
+        ));
+
+        SdJwtUtils.SdJwtParts parts = new SdJwtUtils.SdJwtParts(
+                "ignored",
+                List.of(outer.getDisclosure(), element.getDisclosure()),
+                null
+        );
+
+        assertThat(SdJwtUtils.verifyDisclosures(jwt, parts, objectMapper)).isTrue();
+    }
+
     private String buildKeyBinding(ECKey holderKey, String vpToken, String audience, String nonce) throws Exception {
         JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.ES256)
                 .type(new JOSEObjectType("kb+jwt"))
                 .keyID(holderKey.getKeyID())
                 .build();
+        String sdHash = SdJwtUtils.computeSdHash(SdJwtUtils.split(vpToken), objectMapper);
         JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
                 .issuer("did:example:wallet")
-                .claim("vp_token", vpToken)
                 .issueTime(new Date())
                 .expirationTime(Date.from(Instant.now().plusSeconds(300)))
                 .claim("nonce", nonce)
+                .claim("sd_hash", sdHash)
                 .claim("cnf", Map.of("jwk", holderKey.toPublicJWK().toJSONObject()));
         if (audience != null) {
             claims.audience(audience);
@@ -91,5 +130,19 @@ class SdJwtVerifierTest {
         SignedJWT jwt = new SignedJWT(header, claims.build());
         jwt.sign(new ECDSASigner(holderKey));
         return jwt.serialize();
+    }
+
+    private SignedJWT signPayload(Map<String, Object> claims) throws Exception {
+        JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.ES256)
+                .type(new JOSEObjectType("dc+sd-jwt"))
+                .keyID(issuerKey.getKeyID())
+                .build();
+        JWTClaimsSet.Builder builder = new JWTClaimsSet.Builder();
+        for (Map.Entry<String, Object> entry : claims.entrySet()) {
+            builder.claim(entry.getKey(), entry.getValue());
+        }
+        SignedJWT jwt = new SignedJWT(header, builder.build());
+        jwt.sign(new ECDSASigner(issuerKey));
+        return jwt;
     }
 }

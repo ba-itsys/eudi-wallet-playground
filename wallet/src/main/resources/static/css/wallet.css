@@ -117,9 +117,6 @@ h1 {
 .issuer-form textarea {
   min-height: 96px;
   resize: vertical;
-  font-family: "SFMono-Regular", Consolas, monospace;
-  line-height: 1.45;
-  width: 100%;
 }
 .issuer-row select {
   flex: 1 1 240px;
