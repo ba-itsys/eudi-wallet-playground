@@ -1,13 +1,34 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.verification.service;
 
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import com.nimbusds.jose.JWEObject;
+import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.jwk.JWK;
+import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jwt.SignedJWT;
 import de.arbeitsagentur.keycloak.wallet.common.mdoc.MdocVerifier;
 import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtVerifier;
+import de.arbeitsagentur.keycloak.wallet.common.credential.TrustedIssuerResolver;
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
 import org.springframework.stereotype.Service;
 
+import java.security.PublicKey;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -41,14 +62,20 @@ public class PresentationVerificationService {
                                                          String responseNonce,
                                                          String trustListId,
                                                          String expectedAudience,
-                                                         VerificationSteps steps) throws Exception {
+                                                         String expectedResponseUri,
+                                                         String expectedResponseMode,
+                                                         VerificationSteps steps,
+                                                         List<String> trustedIssuerJwks) throws Exception {
+        List<PublicKey> additionalTrustedIssuerKeys = parseTrustedIssuerKeys(trustedIssuerJwks);
+        SdJwtVerifier effectiveSdJwtVerifier = sdJwtVerifier(additionalTrustedIssuerKeys);
+        MdocVerifier effectiveMdocVerifier = mdocVerifier(additionalTrustedIssuerKeys);
         List<Map<String, Object>> payloads = new ArrayList<>();
         int index = 0;
         for (String token : vpTokens) {
             steps.add("Validating vp_token " + (++index),
                     "Start processing the vp_token and verify trust, audience, nonce, and timing.",
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6");
-            payloads.add(verifySinglePresentation(token, expectedNonce, responseNonce, trustListId, expectedAudience, steps));
+            payloads.add(verifySinglePresentation(token, expectedNonce, responseNonce, trustListId, expectedAudience, expectedResponseUri, expectedResponseMode, steps, effectiveSdJwtVerifier, effectiveMdocVerifier));
         }
         return payloads;
     }
@@ -58,7 +85,11 @@ public class PresentationVerificationService {
                                                         String responseNonce,
                                                         String trustListId,
                                                         String expectedAudience,
-                                                        VerificationSteps steps) throws Exception {
+                                                        String expectedResponseUri,
+                                                        String expectedResponseMode,
+                                                        VerificationSteps steps,
+                                                        SdJwtVerifier sdJwtVerifier,
+                                                        MdocVerifier mdocVerifier) throws Exception {
         String audience = expectedAudience != null && !expectedAudience.isBlank()
                 ? expectedAudience
                 : properties.clientId();
@@ -74,8 +105,22 @@ public class PresentationVerificationService {
         if (sdJwtVerifier.isSdJwt(decryptedToken)) {
             return sdJwtVerifier.verify(decryptedToken, trustListId, audience, expectedNonce, keyBindingJwt, steps);
         }
-        if (mdocVerifier.isMdoc(decryptedToken)) {
-            return mdocVerifier.verify(decryptedToken, trustListId, keyBindingJwt, audience, expectedNonce, steps);
+        if (mdocVerifier != null && mdocVerifier.isMdoc(decryptedToken)) {
+            byte[] thumbprint = null;
+            // Per OID4VP spec, encrypted responses use .jwt suffix (direct_post.jwt or dc_api.jwt)
+            boolean encryptedResponse = expectedResponseMode != null && expectedResponseMode.toLowerCase().endsWith(".jwt");
+            if (encryptedResponse) {
+                var encKey = verifierKeyService.loadOrCreateEncryptionKey().toPublicJWK();
+                thumbprint = encKey.computeThumbprint().decode();
+                org.slf4j.LoggerFactory.getLogger(PresentationVerificationService.class)
+                        .info("[mDoc-verify] Encrypted response mode, jwkThumbprint={}, keyId={}",
+                                java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(thumbprint),
+                                encKey.getKeyID());
+            }
+            org.slf4j.LoggerFactory.getLogger(PresentationVerificationService.class)
+                    .info("[mDoc-verify] Verifying mDoc: audience={}, nonce={}, responseUri={}, hasThumbprint={}",
+                            audience, expectedNonce, expectedResponseUri, thumbprint != null);
+            return mdocVerifier.verify(decryptedToken, trustListId, audience, expectedNonce, expectedResponseUri, thumbprint, steps);
         }
 
         SignedJWT jwt = SignedJWT.parse(decryptedToken);
@@ -129,13 +174,25 @@ public class PresentationVerificationService {
         if (vpToken == null) {
             return null;
         }
-        if (vpToken.chars().filter(c -> c == '.').count() == 4) {
+        if (vpToken.contains("~")) {
+            return vpToken;
+        }
+        if (vpToken.chars().filter(c -> c == '.').count() == 4 && looksLikeJwe(vpToken)) {
             steps.add("Decrypting encrypted vp_token",
                     "vp_token was JWE-encrypted; decrypted with verifier private key.",
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.3");
             return verifierKeyService.decrypt(vpToken);
         }
         return vpToken;
+    }
+
+    private boolean looksLikeJwe(String token) {
+        try {
+            JWEObject.parse(token);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     Envelope unwrapEnvelope(String token) {
@@ -163,4 +220,73 @@ public class PresentationVerificationService {
 
     public record Envelope(String innerToken, String nonce, String audience, String kbJwt) {
     }
+
+    private SdJwtVerifier sdJwtVerifier(List<PublicKey> additionalTrustedIssuerKeys) {
+        if (additionalTrustedIssuerKeys == null || additionalTrustedIssuerKeys.isEmpty()) {
+            return sdJwtVerifier;
+        }
+        TrustedIssuerResolver resolver = new CompositeTrustedIssuerResolver(trustListService, additionalTrustedIssuerKeys);
+        return new SdJwtVerifier(objectMapper, resolver);
+    }
+
+    private MdocVerifier mdocVerifier(List<PublicKey> additionalTrustedIssuerKeys) {
+        if (additionalTrustedIssuerKeys == null || additionalTrustedIssuerKeys.isEmpty()) {
+            return mdocVerifier;
+        }
+        TrustedIssuerResolver resolver = new CompositeTrustedIssuerResolver(trustListService, additionalTrustedIssuerKeys);
+        return new MdocVerifier(resolver);
+    }
+
+    private List<PublicKey> parseTrustedIssuerKeys(List<String> trustedIssuerJwks) {
+        if (trustedIssuerJwks == null || trustedIssuerJwks.isEmpty()) {
+            return List.of();
+        }
+        List<PublicKey> keys = new ArrayList<>();
+        for (String jwkJson : trustedIssuerJwks) {
+            if (jwkJson == null || jwkJson.isBlank()) {
+                continue;
+            }
+            try {
+                JWK jwk = JWK.parse(jwkJson);
+                if (jwk instanceof RSAKey rsaKey && rsaKey.toRSAPublicKey() != null) {
+                    keys.add(rsaKey.toRSAPublicKey());
+                } else if (jwk instanceof ECKey ecKey && ecKey.toECPublicKey() != null) {
+                    keys.add(ecKey.toECPublicKey());
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return keys;
+    }
+
+    private static class CompositeTrustedIssuerResolver implements TrustedIssuerResolver {
+        private final TrustedIssuerResolver delegate;
+        private final List<PublicKey> additional;
+
+        private CompositeTrustedIssuerResolver(TrustedIssuerResolver delegate, List<PublicKey> additional) {
+            this.delegate = delegate;
+            this.additional = additional != null ? List.copyOf(additional) : List.of();
+        }
+
+        @Override
+        public boolean verify(SignedJWT jwt, String trustListId) {
+            if (delegate.verify(jwt, trustListId)) {
+                return true;
+            }
+            for (PublicKey key : additional) {
+                if (TrustedIssuerResolver.verifyWithKey(jwt, key)) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        @Override
+        public List<PublicKey> publicKeys(String trustListId) {
+            List<PublicKey> combined = new ArrayList<>(delegate.publicKeys(trustListId));
+            combined.addAll(additional);
+            return List.copyOf(combined);
+        }
+    }
+
 }

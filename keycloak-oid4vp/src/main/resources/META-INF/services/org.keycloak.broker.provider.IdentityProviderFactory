@@ -1,0 +1,2 @@
+de.arbeitsagentur.keycloak.oid4vp.idp.Oid4vpIdentityProviderFactory
+de.arbeitsagentur.keycloak.oid4vp.idp.pidbinding.PidBindingIdentityProviderFactory

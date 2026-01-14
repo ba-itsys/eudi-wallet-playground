@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.verification.service;
 
 import tools.jackson.databind.ObjectMapper;
@@ -13,6 +28,7 @@ import com.nimbusds.jose.JWEObject;
 import com.nimbusds.jose.Payload;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
+import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtVerifier;
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerificationSteps;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerificationSteps.StepDetail;
@@ -44,6 +60,7 @@ class PresentationVerificationServiceTest {
     private PresentationVerificationService verificationService;
     private VerifierKeyService verifierKeyService;
     private VerifierProperties properties;
+    private SdJwtVerifier sdJwtVerifier;
     @TempDir
     Path tempDir;
 
@@ -53,6 +70,7 @@ class PresentationVerificationServiceTest {
                 tempDir.resolve("verifier-keys.json"), null);
         verifierKeyService = new VerifierKeyService(properties, new ObjectMapper());
         verificationService = new PresentationVerificationService(trustListService, properties, new ObjectMapper(), verifierKeyService);
+        sdJwtVerifier = new SdJwtVerifier(new ObjectMapper(), trustListService);
         when(trustListService.verify(any(SignedJWT.class), anyString())).thenReturn(true);
     }
 
@@ -67,7 +85,11 @@ class PresentationVerificationServiceTest {
                 "nonce-123",
                 "trust-list",
                 properties.clientId(),
-                steps
+                null,
+                null,
+                steps,
+                sdJwtVerifier,
+                null
         );
 
         assertThat(claims.get("nonce")).isEqualTo("nonce-123");
@@ -89,7 +111,11 @@ class PresentationVerificationServiceTest {
                 "other-nonce",
                 "trust-list",
                 properties.clientId(),
-                new VerificationSteps()))
+                null,
+                null,
+                new VerificationSteps(),
+                sdJwtVerifier,
+                null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Nonce mismatch");
     }
@@ -104,7 +130,11 @@ class PresentationVerificationServiceTest {
                 "nonce-1",
                 "trust-list",
                 properties.clientId(),
-                new VerificationSteps()))
+                null,
+                null,
+                new VerificationSteps(),
+                sdJwtVerifier,
+                null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("Audience mismatch");
     }
@@ -119,7 +149,11 @@ class PresentationVerificationServiceTest {
                 "nonce-1",
                 "trust-list",
                 properties.clientId(),
-                new VerificationSteps()))
+                null,
+                null,
+                new VerificationSteps(),
+                sdJwtVerifier,
+                null))
                 .isInstanceOf(IllegalStateException.class)
                 .hasMessageContaining("expired");
     }
@@ -142,7 +176,11 @@ class PresentationVerificationServiceTest {
                 "nonce-enc",
                 "trust-list",
                 properties.clientId(),
-                new VerificationSteps()
+                null,
+                null,
+                new VerificationSteps(),
+                sdJwtVerifier,
+                null
         );
 
         assertThat(claims.get("nonce")).isEqualTo("nonce-enc");

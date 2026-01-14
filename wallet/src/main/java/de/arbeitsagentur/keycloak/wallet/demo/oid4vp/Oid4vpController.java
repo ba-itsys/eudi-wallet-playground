@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.demo.oid4vp;
 
 import de.arbeitsagentur.keycloak.wallet.common.crypto.WalletKeyService;
@@ -10,6 +25,7 @@ import de.arbeitsagentur.keycloak.wallet.issuance.session.SessionService;
 import de.arbeitsagentur.keycloak.wallet.issuance.session.WalletSession;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import tools.jackson.databind.node.ObjectNode;
 import com.nimbusds.jose.JOSEException;
 import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
@@ -19,6 +35,7 @@ import com.nimbusds.jose.EncryptionMethod;
 import com.nimbusds.jose.JWEHeader;
 import com.nimbusds.jose.crypto.RSAEncrypter;
 import com.nimbusds.jose.crypto.ECDHDecrypter;
+import com.nimbusds.jose.crypto.ECDHEncrypter;
 import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.crypto.RSASSASigner;
 import com.nimbusds.jose.crypto.ECDSAVerifier;
@@ -34,7 +51,6 @@ import com.nimbusds.jwt.JWT;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import com.nimbusds.jwt.JWTParser;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -47,10 +63,10 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.servlet.ModelAndView;
-import org.springframework.web.servlet.support.ServletUriComponentsBuilder;
-import org.springframework.web.util.UriComponentsBuilder;
 import jakarta.servlet.http.HttpSession;
 import jakarta.servlet.http.HttpServletRequest;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.net.URI;
 import java.time.Instant;
@@ -63,14 +79,34 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.io.ByteArrayInputStream;
+import java.io.InputStream;
 import java.security.MessageDigest;
+import java.security.PublicKey;
 import java.security.SecureRandom;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
 import java.security.cert.CertificateFactory;
+import java.security.cert.CertPath;
+import java.security.cert.CertPathValidator;
+import java.security.cert.PKIXParameters;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
+import java.security.interfaces.ECPublicKey;
+import java.security.interfaces.RSAPublicKey;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtParser;
+import de.arbeitsagentur.keycloak.wallet.common.sdjwt.SdJwtUtils;
+import de.arbeitsagentur.keycloak.wallet.common.mdoc.MdocDeviceResponseBuilder;
+import de.arbeitsagentur.keycloak.wallet.common.mdoc.MdocParser;
 
 @Controller
 public class Oid4vpController {
+    private static final Logger LOG = LoggerFactory.getLogger(Oid4vpController.class);
     private final PresentationService presentationService;
     private final WalletKeyService walletKeyService;
     private final WalletProperties walletProperties;
@@ -78,8 +114,10 @@ public class Oid4vpController {
     private final DebugLogService debugLogService;
     private final SessionService sessionService;
     private final RestTemplate restTemplate;
-    private final String publicBaseUrl;
     private final SdJwtParser sdJwtParser;
+    private final MdocParser mdocParser;
+    private final MdocDeviceResponseBuilder mdocDeviceResponseBuilder;
+    private volatile Set<TrustAnchor> cachedX509TrustAnchors;
     private static final String SESSION_REQUEST = "oid4vp_request";
     private static final String POST_LOGIN_REDIRECT = "postLoginRedirect";
 
@@ -89,8 +127,7 @@ public class Oid4vpController {
                             ObjectMapper objectMapper,
                             DebugLogService debugLogService,
                             SessionService sessionService,
-                            RestTemplate restTemplate,
-                            @Value("${wallet.public-base-url:}") String publicBaseUrl) {
+                            RestTemplate restTemplate) {
         this.presentationService = presentationService;
         this.walletKeyService = walletKeyService;
         this.walletProperties = walletProperties;
@@ -98,8 +135,9 @@ public class Oid4vpController {
         this.debugLogService = debugLogService;
         this.sessionService = sessionService;
         this.restTemplate = restTemplate;
-        this.publicBaseUrl = publicBaseUrl;
         this.sdJwtParser = new SdJwtParser(objectMapper);
+        this.mdocParser = new MdocParser();
+        this.mdocDeviceResponseBuilder = new MdocDeviceResponseBuilder();
     }
 
     @GetMapping("/oid4vp/auth")
@@ -108,13 +146,13 @@ public class Oid4vpController {
                                    @RequestParam(name = "state", required = false) String state,
                                    @RequestParam(name = "dcql_query", required = false) String dcqlQuery,
                                    @RequestParam(name = "nonce", required = false) String nonce,
+                                   @RequestParam(name = "response_mode", required = false) String responseMode,
                                    @RequestParam(name = "client_id", required = false) String clientId,
                                    @RequestParam(name = "client_metadata", required = false) String clientMetadata,
                                    @RequestParam(name = "request", required = false) String requestObject,
                                    @RequestParam(name = "request_uri", required = false) String requestUri,
                                    @RequestParam(name = "client_cert", required = false) String clientCert,
-                                   HttpSession httpSession,
-                                   HttpServletRequest servletRequest) {
+                                   HttpSession httpSession) {
         WalletSession walletSession = sessionService.getSession(httpSession);
         String targetResponseUri = responseUri != null && !responseUri.isBlank() ? responseUri : redirectUri;
         PendingRequest pending;
@@ -135,26 +173,40 @@ public class Oid4vpController {
             } catch (Exception e) {
                 return errorView("Invalid request object: " + e.getMessage());
             }
-        } else {
-            if (state == null || state.isBlank()) {
-                return errorView("Missing state parameter");
+	        } else {
+	            String effectiveState = state;
+	            if (effectiveState == null || effectiveState.isBlank()) {
+	                return errorView("Missing state parameter");
+	            }
+	            if (clientId != null
+	                    && (clientId.startsWith("x509_hash:")
+	                    || clientId.startsWith("x509_san_dns:")
+                    || clientId.startsWith("verifier_attestation:"))) {
+                String scheme = clientId.contains(":") ? clientId.substring(0, clientId.indexOf(':')) : clientId;
+                return errorView("Request object required for " + scheme + " client_id");
             }
             try {
                 validateClientBinding(clientId, clientMetadata, clientCert);
             } catch (IllegalStateException e) {
                 return errorView(e.getMessage());
             }
-            pending = new PendingRequest(
-                    state,
-                    nonce,
-                    targetResponseUri,
-                    clientId,
-                    dcqlQuery,
-                    clientMetadata,
-                    null,
-                    null
-            );
-        }
+            // Per OID4VP DC API spec: derive client_id from response_uri origin if not provided
+            String effectiveClientId = clientId;
+            if ((effectiveClientId == null || effectiveClientId.isBlank()) && targetResponseUri != null) {
+                effectiveClientId = deriveClientIdFromUri(targetResponseUri);
+            }
+	            pending = new PendingRequest(
+	                    effectiveState,
+	                    nonce,
+	                    targetResponseUri,
+	                    effectiveClientId,
+	                    dcqlQuery,
+	                    clientMetadata,
+	                    responseMode,
+	                    null,
+	                    null
+	            );
+	        }
         if (requestResolution != null) {
             debugLogService.addVerification(
                     pending.state(),
@@ -172,11 +224,10 @@ public class Oid4vpController {
             );
         }
         httpSession.setAttribute(SESSION_REQUEST, pending);
-        httpSession.setAttribute(POST_LOGIN_REDIRECT, continueUrl(servletRequest));
-        if (walletSession == null || !walletSession.isAuthenticated()) {
-            return new ModelAndView("redirect:/auth/login");
-        }
-        return continuePending(httpSession, servletRequest);
+        httpSession.setAttribute(POST_LOGIN_REDIRECT, "/oid4vp/continue");
+        // Continue directly to consent page - don't require login
+        // If not authenticated, only mock-issuer credentials will be shown
+        return continuePending(httpSession);
     }
 
     @PostMapping("/oid4vp/consent")
@@ -187,40 +238,52 @@ public class Oid4vpController {
         }
         if (!"accept".equalsIgnoreCase(decision)) {
             httpSession.removeAttribute(SESSION_REQUEST);
-            return submitView(pending.responseUri(), Map.of(
+            return submitResponse(pending, Map.of(
                     "state", pending.state(),
                     "error", "access_denied",
                     "error_description", "User denied presentation"
             ));
         }
         WalletSession walletSession = sessionService.getSession(httpSession);
-        if (walletSession == null || !walletSession.isAuthenticated()) {
-            httpSession.removeAttribute(SESSION_REQUEST);
-            return errorView("Please sign in to your wallet before sharing credentials.");
-        }
+        boolean authenticated = walletSession != null && walletSession.isAuthenticated();
+        // Determine which credentials to use:
+        // - If authenticated: show user's credentials + mock-issuer credentials
+        // - If not authenticated: only show mock-issuer credentials
+        List<String> ownerIds = authenticated
+                ? walletSession.ownerIdsIncluding(CredentialStore.MOCK_ISSUER_OWNER)
+                : List.of(CredentialStore.MOCK_ISSUER_OWNER);
         if (pending.responseUri() == null || pending.responseUri().isBlank()) {
             httpSession.removeAttribute(SESSION_REQUEST);
             return errorView("Missing response_uri for direct_post");
         }
         var options = pending.options() != null
                 ? Optional.of(pending.options())
-                : presentationService.preparePresentationOptions(walletSession.ownerIdsIncluding(CredentialStore.MOCK_ISSUER_OWNER),
-                pending.dcqlQuery());
+                : presentationService.preparePresentationOptions(ownerIds, pending.dcqlQuery());
         if (options.isEmpty()) {
             httpSession.removeAttribute(SESSION_REQUEST);
-            return errorView("No matching credential found");
+            return noMatchErrorView(pending, "Your wallet does not contain a credential that matches what the verifier requested.");
         }
         Map<String, String> selections = extractSelections(httpSession, pending, request.getParameterMap());
         Optional<List<DescriptorMatch>> chosen = presentationService.selectDistinctMatches(options.get(), selections);
         if (chosen.isEmpty() || chosen.get().size() != options.get().options().size()) {
             httpSession.removeAttribute(SESSION_REQUEST);
-            return errorView("No matching credential found");
+            return noMatchErrorView(pending, "Could not select matching credentials for all requested credential types.");
         }
         Map<String, List<String>> vpTokens = new LinkedHashMap<>();
-        for (DescriptorMatch match : chosen.get()) {
-            String token = buildEnvelopeVpToken(match.vpToken(), pending.nonce(), pending.clientId());
-            token = encryptIfRequested(token, pending.clientMetadata());
-            vpTokens.computeIfAbsent(match.descriptorId(), k -> new ArrayList<>()).add(token);
+        try {
+            String audience = pending.clientId();
+            for (DescriptorMatch match : chosen.get()) {
+                String token = buildVpToken(match.vpToken(),
+                        pending.nonce(),
+                        audience,
+                        pending.responseUri(),
+                        pending.clientMetadata(),
+                        pending.responseMode());
+                vpTokens.computeIfAbsent(match.descriptorId(), k -> new ArrayList<>()).add(token);
+            }
+        } catch (Exception e) {
+            httpSession.removeAttribute(SESSION_REQUEST);
+            return errorView("Failed to build presentation: " + e.getMessage());
         }
         String vpTokenParam;
         try {
@@ -230,12 +293,10 @@ public class Oid4vpController {
         }
 
         httpSession.removeAttribute(SESSION_REQUEST);
+
         Map<String, String> fields = new LinkedHashMap<>();
         fields.put("state", pending.state());
         fields.put("vp_token", vpTokenParam);
-        if (pending.nonce() != null && !pending.nonce().isBlank()) {
-            fields.put("nonce", pending.nonce());
-        }
 
         debugLogService.addVerification(
                 pending.state(),
@@ -252,26 +313,30 @@ public class Oid4vpController {
                 "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html",
                 decodeJwtLike(vpTokenParam)
         );
-        return submitView(pending.responseUri(), fields);
+        return submitResponse(pending, fields);
     }
 
     @GetMapping("/oid4vp/continue")
-    public ModelAndView continuePending(HttpSession httpSession, HttpServletRequest servletRequest) {
+    public ModelAndView continuePending(HttpSession httpSession) {
         PendingRequest pending = (PendingRequest) httpSession.getAttribute(SESSION_REQUEST);
         if (pending == null) {
             return errorView("Presentation request not found or expired");
         }
         WalletSession walletSession = sessionService.getSession(httpSession);
-        if (walletSession == null || !walletSession.isAuthenticated()) {
-            httpSession.setAttribute(POST_LOGIN_REDIRECT, continueUrl(servletRequest));
-            return new ModelAndView("redirect:/auth/login");
-        }
+        boolean authenticated = walletSession != null && walletSession.isAuthenticated();
+        // Determine which credentials to show:
+        // - If authenticated: show user's credentials + mock-issuer credentials
+        // - If not authenticated: only show mock-issuer credentials
+        List<String> ownerIds = authenticated
+                ? walletSession.ownerIdsIncluding(CredentialStore.MOCK_ISSUER_OWNER)
+                : List.of(CredentialStore.MOCK_ISSUER_OWNER);
         var options = pending.options();
         if (options == null) {
-            Optional<PresentationService.PresentationOptions> prepared = presentationService.preparePresentationOptions(walletSession.ownerIdsIncluding(CredentialStore.MOCK_ISSUER_OWNER),
+            Optional<PresentationService.PresentationOptions> prepared = presentationService.preparePresentationOptions(ownerIds,
                     pending.dcqlQuery());
             if (prepared.isEmpty()) {
-                return errorView("No credential matching the dcql_query");
+                httpSession.removeAttribute(SESSION_REQUEST);
+                return noMatchErrorView(pending, "Your wallet does not contain a credential that matches what the verifier requested.");
             }
             options = prepared.get();
             pending = pending.withOptions(options);
@@ -284,6 +349,7 @@ public class Oid4vpController {
         mv.addObject("responseUri", pending.responseUri());
         mv.addObject("nonce", pending.nonce());
         mv.addObject("clientId", pending.clientId());
+        mv.addObject("authenticated", authenticated);
         Map<String, String> descriptorVcts = new LinkedHashMap<>();
         for (var opt : options.options()) {
             Map<String, Object> first = opt.candidates().isEmpty() ? null : opt.candidates().get(0).credential();
@@ -302,33 +368,11 @@ public class Oid4vpController {
             }
         }
         mv.addObject("candidateVcts", candidateVcts);
-        if (walletSession.getUserProfile() != null) {
+        if (walletSession != null && walletSession.getUserProfile() != null) {
             mv.addObject("userName", walletSession.getUserProfile().displayName());
             mv.addObject("userEmail", walletSession.getUserProfile().email());
         }
         return mv;
-    }
-
-    private String continueUrl(HttpServletRequest request) {
-        return UriComponentsBuilder.fromUri(currentBaseUri(request))
-                .path("/oid4vp/continue")
-                .build(true)
-                .toUriString();
-    }
-
-    private URI currentBaseUri(HttpServletRequest request) {
-        if (publicBaseUrl != null && !publicBaseUrl.isBlank()) {
-            URI base = URI.create(publicBaseUrl);
-            if (!base.getPath().endsWith("/")) {
-                return UriComponentsBuilder.fromUri(base).path("/").build(true).toUri();
-            }
-            return base;
-        }
-        URI base = URI.create(ServletUriComponentsBuilder.fromCurrentContextPath().build().toUriString());
-        if (!base.getPath().endsWith("/")) {
-            return UriComponentsBuilder.fromUri(base).path("/").build(true).toUri();
-        }
-        return base;
     }
 
     private ModelAndView errorView(String message) {
@@ -345,28 +389,179 @@ public class Oid4vpController {
         return mv;
     }
 
-    private String buildEnvelopeVpToken(String innerVpToken, String nonce, String audience) {
+    private ModelAndView submitErrorResponse(PendingRequest pending, String error, String errorDescription) {
+        if (pending == null) {
+            return errorView("Presentation request not found or expired");
+        }
+        Map<String, String> fields = new LinkedHashMap<>();
+        fields.put("state", pending.state());
+        if (error != null && !error.isBlank()) {
+            fields.put("error", error);
+        }
+        if (errorDescription != null && !errorDescription.isBlank()) {
+            fields.put("error_description", errorDescription);
+        }
+        return submitResponse(pending, fields);
+    }
+
+    private ModelAndView noMatchErrorView(PendingRequest pending, String errorDescription) {
+        if (pending == null) {
+            return errorView("Presentation request not found or expired");
+        }
+        ModelAndView mv = new ModelAndView("oid4vp-no-match");
+        mv.addObject("state", pending.state());
+        mv.addObject("error", "access_denied");
+        mv.addObject("errorDescription", errorDescription);
+        mv.addObject("redirectUri", pending.responseUri());
+        mv.addObject("dcqlQuery", pretty(pending.dcqlQuery()));
+        return mv;
+    }
+
+    private ModelAndView submitResponse(PendingRequest pending, Map<String, String> fields) {
+        if (pending == null) {
+            return errorView("Presentation request not found or expired");
+        }
+        // OID4VP 1.0 Section 5.6: response_mode defaults based on context
+        // - If response_uri is present: default is direct_post
+        // - If client_metadata requests encrypted responses: prefer direct_post.jwt
+        // - DC API uses dc_api.jwt for encrypted responses
+        String responseMode = resolveResponseMode(pending);
+        boolean encryptedResponse = responseMode != null && responseMode.toLowerCase().endsWith(".jwt");
+        if (encryptedResponse) {
+            try {
+                ObjectNode payload = objectMapper.createObjectNode();
+                for (Map.Entry<String, String> entry : fields.entrySet()) {
+                    if (entry.getKey() == null || entry.getValue() == null) {
+                        continue;
+                    }
+                    if ("vp_token".equals(entry.getKey())) {
+                        payload.set("vp_token", objectMapper.readTree(entry.getValue()));
+                    } else {
+                        payload.put(entry.getKey(), entry.getValue());
+                    }
+                }
+                String encrypted = encryptResponse(payload.toString(), pending.clientMetadata());
+                return submitView(pending.responseUri(), Map.of("response", encrypted));
+            } catch (Exception e) {
+                return errorView("Failed to encrypt response: " + e.getMessage());
+            }
+        }
+        return submitView(pending.responseUri(), fields);
+    }
+
+    private String buildVpToken(String innerVpToken,
+                                String nonce,
+                                String audience,
+                                String responseUri,
+                                String clientMetadata,
+                                String responseMode) throws Exception {
+        if (sdJwtParser.isSdJwt(innerVpToken)) {
+            return buildSdJwtPresentation(innerVpToken, nonce, audience);
+        }
+        if (mdocParser.isIssuerSigned(innerVpToken)) {
+            // Per OID4VP spec, encrypted responses use .jwt suffix (direct_post.jwt or dc_api.jwt)
+            boolean encryptedResponse = responseMode != null && responseMode.toLowerCase().endsWith(".jwt");
+            boolean isDcApiMode = responseMode != null && responseMode.toLowerCase().startsWith("dc_api");
+            LOG.debug("buildVpToken mDoc: responseMode='{}', isDcApiMode={}, responseUri='{}'", responseMode, isDcApiMode, responseUri);
+            JWK handoverJwk = encryptedResponse ? selectResponseEncryptionJwk(clientMetadata) : null;
+            if (encryptedResponse && handoverJwk == null) {
+                throw new IllegalStateException("Missing client_metadata.jwks for encrypted response SessionTranscript");
+            }
+            // For DC API mode (Appendix B.2.5), use the origin of response_uri for SessionTranscript.
+            // For regular OID4VP mode, use the full response_uri as provided.
+            String sessionTranscriptResponseUri = isDcApiMode ? deriveOriginWithTrailingSlash(responseUri) : responseUri;
+            LOG.debug("buildVpToken mDoc: sessionTranscriptResponseUri='{}'", sessionTranscriptResponseUri);
+            return mdocDeviceResponseBuilder.buildDeviceResponse(
+                    innerVpToken,
+                    walletKeyService.loadOrCreateKey(),
+                    audience,
+                    nonce,
+                    sessionTranscriptResponseUri,
+                    handoverJwk
+            );
+        }
+        return innerVpToken;
+    }
+
+    /**
+     * Derives the origin from a URI with a trailing slash (e.g., "http://example.com/").
+     * Per OID4VP spec Appendix B.2.5, mDoc SessionTranscript uses the origin for response_uri.
+     */
+    private String deriveOriginWithTrailingSlash(String uri) {
+        if (uri == null || uri.isBlank()) {
+            return uri;
+        }
+        try {
+            URI parsed = URI.create(uri);
+            String scheme = parsed.getScheme();
+            String host = parsed.getHost();
+            int port = parsed.getPort();
+            if (scheme == null || host == null) {
+                return uri;
+            }
+            boolean includePort = port != -1
+                    && !((port == 80 && "http".equalsIgnoreCase(scheme))
+                    || (port == 443 && "https".equalsIgnoreCase(scheme)));
+            if (includePort) {
+                return "%s://%s:%d/".formatted(scheme.toLowerCase(), host, port);
+            }
+            return "%s://%s/".formatted(scheme.toLowerCase(), host);
+        } catch (Exception e) {
+            return uri;
+        }
+    }
+
+    private JWK selectResponseEncryptionJwk(String clientMetadataJson) throws Exception {
+        if (clientMetadataJson == null || clientMetadataJson.isBlank()) {
+            return null;
+        }
+        JsonNode meta = objectMapper.readTree(clientMetadataJson);
+        JsonNode jwksNode = meta.get("jwks");
+        if (jwksNode == null || jwksNode.isMissingNode()) {
+            return null;
+        }
+        JWKSet set = JWKSet.parse(jwksNode.toString());
+        return set.getKeys().stream()
+                .filter(k -> k.getAlgorithm() != null)
+                .findFirst()
+                .orElse(null);
+    }
+
+    private String buildSdJwtPresentation(String sdJwt, String nonce, String audience) {
+        if (nonce == null || nonce.isBlank()) {
+            return sdJwt;
+        }
+        if (audience == null || audience.isBlank()) {
+            return sdJwt;
+        }
         try {
             ECKey holderKey = walletKeyService.loadOrCreateKey();
             JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.ES256)
                     .type(new JOSEObjectType("kb+jwt"))
                     .keyID(holderKey.getKeyID())
                     .build();
-            JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
-                    .issuer(walletProperties.walletDid())
-                    .claim("vp_token", innerVpToken)
+            SdJwtUtils.SdJwtParts parts = sdJwtParser.split(sdJwt);
+            String sdHash = SdJwtUtils.computeSdHash(parts, objectMapper);
+            JWTClaimsSet claims = new JWTClaimsSet.Builder()
+                    .audience(audience)
                     .issueTime(new Date())
                     .expirationTime(Date.from(Instant.now().plusSeconds(300)))
                     .claim("nonce", nonce)
-                    .claim("cnf", Map.of("jwk", holderKey.toPublicJWK().toJSONObject()));
-            if (audience != null && !audience.isBlank()) {
-                claims.audience(audience);
+                    .claim("sd_hash", sdHash)
+                    .build();
+            SignedJWT kbJwt = new SignedJWT(header, claims);
+            kbJwt.sign(new ECDSASigner(holderKey));
+            String withoutKb = sdJwtParser.signedJwt(sdJwt);
+            if (parts.disclosures() != null) {
+                for (String disclosure : parts.disclosures()) {
+                    if (disclosure != null && !disclosure.isBlank()) {
+                        withoutKb = withoutKb + "~" + disclosure;
+                    }
+                }
             }
-            SignedJWT jwt = new SignedJWT(header, claims.build());
-            jwt.sign(new ECDSASigner(holderKey));
-            return jwt.serialize();
-        } catch (JOSEException e) {
-            return innerVpToken;
+            return withoutKb + "~" + kbJwt.serialize();
+        } catch (Exception e) {
+            return sdJwt;
         }
     }
 
@@ -441,7 +636,7 @@ public class Oid4vpController {
     private String generateWalletNonce() {
         byte[] random = new byte[24];
         new SecureRandom().nextBytes(random);
-        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(random);
+        return base64UrlEncodeNoPad(random);
     }
 
     private boolean isEncryptedJwe(String token) {
@@ -484,16 +679,20 @@ public class Oid4vpController {
         }
     }
 
-    private PendingRequest parseRequestObject(String requestObject, String expectedState, String incomingRedirectUri, String expectedWalletNonce) throws Exception {
-        JWT parsed = JWTParser.parse(requestObject);
-        SignedJWT requestJwt = parsed instanceof SignedJWT sj ? sj : null;
-        JWTClaimsSet claims = parsed.getJWTClaimsSet();
-        String clientId = claims.getStringClaim("client_id");
-        String responseUri = claims.getStringClaim("response_uri");
+		    private PendingRequest parseRequestObject(String requestObject,
+		                                              String expectedState,
+		                                              String incomingRedirectUri,
+		                                              String expectedWalletNonce) throws Exception {
+		        JWT parsed = JWTParser.parse(requestObject);
+		        SignedJWT requestJwt = parsed instanceof SignedJWT sj ? sj : null;
+		        JWTClaimsSet claims = parsed.getJWTClaimsSet();
+		        String clientId = claims.getStringClaim("client_id");
+	        String responseUri = claims.getStringClaim("response_uri");
+	        String responseMode = claims.getStringClaim("response_mode");
         if (responseUri == null || responseUri.isBlank()) {
             responseUri = incomingRedirectUri;
         }
-        String dcqlQuery = claims.getStringClaim("dcql_query");
+        String dcqlQuery = extractJsonClaim(claims.getClaim("dcql_query"));
         String nonce = claims.getStringClaim("nonce");
         String state = claims.getStringClaim("state");
         if (state == null || state.isBlank()) {
@@ -511,9 +710,9 @@ public class Oid4vpController {
                 throw new IllegalStateException("wallet_nonce mismatch in request object");
             }
         }
-        String clientMetadata = extractClientMetadata(claims.getClaim("client_metadata"));
-        String authType = clientId != null && clientId.startsWith("verifier_attestation:") ? "verifier_attestation" : "plain";
-        if ("verifier_attestation".equals(authType)) {
+	        String clientMetadata = extractClientMetadata(claims.getClaim("client_metadata"));
+	        String authType = clientId != null && clientId.startsWith("verifier_attestation:") ? "verifier_attestation" : "plain";
+	        if ("verifier_attestation".equals(authType)) {
             if (requestJwt == null) {
                 throw new IllegalStateException("Request object must be signed for verifier_attestation");
             }
@@ -529,17 +728,24 @@ public class Oid4vpController {
             }
             verifyX509HashRequest(clientId, requestJwt);
         }
-        return new PendingRequest(
-                state,
-                nonce,
-                responseUri,
-                clientId,
-                dcqlQuery,
-                clientMetadata,
-                null,
-                null
-        );
-    }
+	        if (clientId != null && clientId.startsWith("x509_san_dns:")) {
+	            if (requestJwt == null) {
+	                throw new IllegalStateException("Request object must be signed for x509_san_dns client_id");
+	            }
+	            verifyX509SanDnsRequest(clientId, requestJwt, responseUri);
+	        }
+		        return new PendingRequest(
+		                state,
+		                nonce,
+		                responseUri,
+		                clientId,
+		                dcqlQuery,
+		                clientMetadata,
+		                responseMode,
+		                null,
+		                null
+	        );
+	    }
 
     private void verifyAttestationRequest(String clientId, String attestationJwt, SignedJWT requestJwt, String responseUri) throws Exception {
         SignedJWT att = SignedJWT.parse(attestationJwt);
@@ -564,7 +770,10 @@ public class Oid4vpController {
         }
         String iss = attClaims.getIssuer();
         List<String> trusted = walletProperties.trustedAttestationIssuers();
-        if (trusted != null && !trusted.isEmpty() && (iss == null || !trusted.contains(iss))) {
+        if (trusted == null || trusted.isEmpty()) {
+            throw new IllegalStateException("No trusted verifier attestation issuers configured");
+        }
+        if (iss == null || iss.isBlank() || !trusted.contains(iss)) {
             throw new IllegalStateException("Untrusted verifier attestation issuer");
         }
         String baseClientId = clientId != null && clientId.startsWith("verifier_attestation:")
@@ -603,11 +812,61 @@ public class Oid4vpController {
         if (!expected.equals(actual)) {
             throw new IllegalStateException("client_id hash does not match x5c certificate");
         }
-        RSAKey rsaKey = RSAKey.parse(leaf);
-        boolean verified = requestJwt.verify(new RSASSAVerifier(rsaKey));
-        if (!verified) {
+        if (!verifySignatureWithCertificate(requestJwt, leaf)) {
             throw new IllegalStateException("Request object signature invalid (x509_hash)");
         }
+    }
+
+    private void verifyX509SanDnsRequest(String clientId, SignedJWT requestJwt, String responseUri) throws Exception {
+        List<Base64> chain = requestJwt.getHeader().getX509CertChain();
+        X509Certificate leaf = validateCertificateChain(chain);
+        String expectedDns = clientId.substring("x509_san_dns:".length());
+        if (expectedDns.isBlank()) {
+            throw new IllegalStateException("x509_san_dns client_id is missing DNS value");
+        }
+        String actualDns = firstDnsSan(leaf);
+        if (actualDns == null || actualDns.isBlank()) {
+            throw new IllegalStateException("x509_san_dns request certificate missing dNSName SAN");
+        }
+        if (!expectedDns.equals(actualDns)) {
+            throw new IllegalStateException("client_id does not match certificate dNSName SAN");
+        }
+        if (responseUri != null && !responseUri.isBlank()) {
+            URI parsed = URI.create(responseUri);
+            String host = parsed.getHost();
+            if (host == null || host.isBlank() || !expectedDns.equalsIgnoreCase(host)) {
+                throw new IllegalStateException("response_uri host does not match x509_san_dns client_id");
+            }
+        }
+        if (!verifySignatureWithCertificate(requestJwt, leaf)) {
+            throw new IllegalStateException("Request object signature invalid (x509_san_dns)");
+        }
+    }
+
+    private boolean verifySignatureWithCertificate(SignedJWT jwt, X509Certificate certificate) throws Exception {
+        PublicKey publicKey = certificate.getPublicKey();
+        if (publicKey instanceof RSAPublicKey rsaPublicKey) {
+            return jwt.verify(new RSASSAVerifier(rsaPublicKey));
+        }
+        if (publicKey instanceof ECPublicKey ecPublicKey) {
+            return jwt.verify(new ECDSAVerifier(ecPublicKey));
+        }
+        throw new IllegalStateException("Unsupported certificate public key type: " + publicKey.getAlgorithm());
+    }
+
+    private String firstDnsSan(X509Certificate cert) throws Exception {
+        if (cert.getSubjectAlternativeNames() == null) {
+            return null;
+        }
+        for (List<?> entry : cert.getSubjectAlternativeNames()) {
+            if (entry != null && entry.size() >= 2 && entry.get(0) instanceof Integer type && type == 2) {
+                Object value = entry.get(1);
+                if (value != null) {
+                    return String.valueOf(value);
+                }
+            }
+        }
+        return null;
     }
 
     private String decodeJwtLike(String token) {
@@ -625,7 +884,7 @@ public class Oid4vpController {
             if (parts.length < 2) {
                 return "";
             }
-            byte[] payload = java.util.Base64.getUrlDecoder().decode(parts[1]);
+            byte[] payload = base64UrlDecode(parts[1]);
             return objectMapper.writerWithDefaultPrettyPrinter()
                     .writeValueAsString(objectMapper.readTree(payload));
         } catch (Exception e) {
@@ -641,37 +900,54 @@ public class Oid4vpController {
         }
     }
 
-    private String encryptIfRequested(String token, String clientMetadataJson) {
+    private String encryptResponse(String jsonPayload, String clientMetadataJson) throws Exception {
         if (clientMetadataJson == null || clientMetadataJson.isBlank()) {
-            return token;
+            throw new IllegalStateException("Missing client_metadata for encrypted response");
         }
-        try {
-            JsonNode meta = objectMapper.readTree(clientMetadataJson);
-            JsonNode jwksNode = meta.get("jwks");
-            if (jwksNode == null || jwksNode.isMissingNode()) {
-                return token;
+        JsonNode meta = objectMapper.readTree(clientMetadataJson);
+        JsonNode jwksNode = meta.get("jwks");
+        if (jwksNode == null || jwksNode.isMissingNode()) {
+            throw new IllegalStateException("client_metadata.jwks missing for encrypted response");
+        }
+        JWKSet set = JWKSet.parse(jwksNode.toString());
+        JWK jwk = set.getKeys().stream()
+                .filter(k -> k.getAlgorithm() != null)
+                .findFirst()
+                .orElse(null);
+        if (jwk == null) {
+            throw new IllegalStateException("No suitable encryption key found in client_metadata.jwks");
+        }
+        JWEAlgorithm jweAlg = JWEAlgorithm.parse(jwk.getAlgorithm().getName());
+        EncryptionMethod jweEnc = EncryptionMethod.A128GCM;
+        // Prefer new OID4VP parameter, fall back to legacy parameter
+        JsonNode encValue = meta.get("authorization_encrypted_response_enc");
+        if (encValue != null && encValue.isTextual()) {
+            String enc = encValue.asText(null);
+            if (enc != null && !enc.isBlank()) {
+                jweEnc = EncryptionMethod.parse(enc);
             }
-            JWKSet set = JWKSet.parse(jwksNode.toString());
-            JWK jwk = set.getKeys().stream()
-                    .filter(k -> k instanceof RSAKey)
-                    .findFirst()
-                    .orElse(null);
-            if (!(jwk instanceof RSAKey rsaKey)) {
-                return token;
+        } else {
+            JsonNode encValues = meta.get("encrypted_response_enc_values_supported");
+            if (encValues != null && encValues.isArray() && !encValues.isEmpty()) {
+                String enc = encValues.get(0).asText(null);
+                if (enc != null && !enc.isBlank()) {
+                    jweEnc = EncryptionMethod.parse(enc);
+                }
             }
-            String alg = meta.path("response_encryption_alg").asText("RSA-OAEP-256");
-            String enc = meta.path("response_encryption_enc").asText("A256GCM");
-            JWEAlgorithm jweAlg = JWEAlgorithm.parse(alg);
-            EncryptionMethod jweEnc = EncryptionMethod.parse(enc);
-            JWEObject jwe = new JWEObject(
-                    new JWEHeader.Builder(jweAlg, jweEnc).keyID(rsaKey.getKeyID()).build(),
-                    new Payload(token)
-            );
+        }
+        JWEHeader.Builder header = new JWEHeader.Builder(jweAlg, jweEnc);
+        if (jwk.getKeyID() != null && !jwk.getKeyID().isBlank()) {
+            header.keyID(jwk.getKeyID());
+        }
+        JWEObject jwe = new JWEObject(header.build(), new Payload(jsonPayload));
+        if (jwk instanceof RSAKey rsaKey) {
             jwe.encrypt(new RSAEncrypter(rsaKey));
-            return jwe.serialize();
-        } catch (Exception e) {
-            return token;
+        } else if (jwk instanceof ECKey ecKey) {
+            jwe.encrypt(new ECDHEncrypter(ecKey));
+        } else {
+            throw new IllegalStateException("Unsupported encryption key type: " + jwk.getKeyType());
         }
+        return jwe.serialize();
     }
 
     private Map<String, String> extractSelections(HttpSession session, PendingRequest pending, Map<String, String[]> params) {
@@ -731,6 +1007,39 @@ public class Oid4vpController {
         }
     }
 
+    /**
+     * Resolves the response_mode per OID4VP 1.0 Section 5.6.
+     * - If explicitly provided, use that value
+     * - If response_uri is present and client_metadata indicates encrypted response support, use direct_post.jwt
+     * - If response_uri is present, default to direct_post
+     * - Otherwise fall back to direct_post (this wallet only supports direct_post variants)
+     */
+    private String resolveResponseMode(PendingRequest pending) {
+        if (pending.responseMode() != null && !pending.responseMode().isBlank()) {
+            return pending.responseMode();
+        }
+        // Check if client metadata indicates encrypted responses are required/supported
+        if (pending.clientMetadata() != null && !pending.clientMetadata().isBlank()) {
+            try {
+                JsonNode meta = objectMapper.readTree(pending.clientMetadata());
+                // If client provides encryption keys via jwks and specifies encryption alg values,
+                // prefer encrypted response mode
+                JsonNode jwks = meta.get("jwks");
+                JsonNode encAlgValues = meta.get("authorization_encrypted_response_alg");
+                if (encAlgValues == null) {
+                    encAlgValues = meta.get("encrypted_response_alg_values_supported");
+                }
+                if (jwks != null && !jwks.isMissingNode() && encAlgValues != null && !encAlgValues.isMissingNode()) {
+                    return "direct_post.jwt";
+                }
+            } catch (Exception ignored) {
+                // Fall through to default
+            }
+        }
+        // Default to direct_post when response_uri is present (OID4VP Section 5.6)
+        return "direct_post";
+    }
+
     private void validateClientBinding(String clientId, String clientMetadata, String clientCert) {
         if (clientId == null || !clientId.startsWith("x509_hash:")) {
             return;
@@ -754,7 +1063,7 @@ public class Oid4vpController {
             if (sanitized != null) {
                 sanitized = sanitized.replace(' ', '+');
             }
-            byte[] der = java.util.Base64.getDecoder().decode(sanitized);
+            byte[] der = base64Decode(sanitized);
             return hashCertificate(der);
         } catch (Exception e) {
             throw new IllegalStateException("Invalid client_cert for x509_hash client_id", e);
@@ -774,10 +1083,22 @@ public class Oid4vpController {
     private String hashCertificate(X509Certificate cert) {
         try {
             byte[] digest = MessageDigest.getInstance("SHA-256").digest(cert.getEncoded());
-            return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(digest);
+            return base64UrlEncodeNoPad(digest);
         } catch (Exception e) {
             throw new IllegalStateException("Failed to hash certificate", e);
         }
+    }
+
+    private static String base64UrlEncodeNoPad(byte[] value) {
+        return java.util.Base64.getUrlEncoder().withoutPadding().encodeToString(value);
+    }
+
+    private static byte[] base64UrlDecode(String value) {
+        return java.util.Base64.getUrlDecoder().decode(value);
+    }
+
+    private static byte[] base64Decode(String value) {
+        return java.util.Base64.getDecoder().decode(value);
     }
 
     private String extractFirstPemBlock(String pem) {
@@ -796,7 +1117,7 @@ public class Oid4vpController {
 
     private X509Certificate validateCertificateChain(List<Base64> chain) throws Exception {
         if (chain == null || chain.isEmpty()) {
-            throw new IllegalStateException("x509_hash request missing x5c header");
+            throw new IllegalStateException("Signed request object missing x5c header");
         }
         CertificateFactory cf = CertificateFactory.getInstance("X.509");
         List<X509Certificate> certs = new ArrayList<>();
@@ -806,15 +1127,134 @@ public class Oid4vpController {
             cert.checkValidity();
             certs.add(cert);
         }
-        for (int i = 0; i < certs.size(); i++) {
-            X509Certificate cert = certs.get(i);
-            X509Certificate issuer = i + 1 < certs.size() ? certs.get(i + 1) : certs.get(certs.size() - 1);
-            cert.verify(issuer.getPublicKey());
-        }
+        validateX509TrustChain(cf, certs);
         return certs.get(0);
     }
 
+    private void validateX509TrustChain(CertificateFactory cf, List<X509Certificate> chain) throws Exception {
+        Set<TrustAnchor> trustAnchors = x509TrustAnchors();
+        if (trustAnchors == null || trustAnchors.isEmpty()) {
+            throw new IllegalStateException("No trust anchors available for X.509 trust chain validation");
+        }
+
+        List<List<X509Certificate>> candidates = new ArrayList<>();
+        candidates.add(chain);
+        if (chain.size() > 1 && isSelfSigned(chain.get(chain.size() - 1))) {
+            candidates.add(chain.subList(0, chain.size() - 1));
+        }
+
+        Exception last = null;
+        for (List<X509Certificate> candidate : candidates) {
+            try {
+                PKIXParameters params = new PKIXParameters(trustAnchors);
+                params.setRevocationEnabled(false);
+                CertPath certPath = cf.generateCertPath(candidate);
+                CertPathValidator.getInstance("PKIX").validate(certPath, params);
+                return;
+            } catch (Exception e) {
+                last = e;
+            }
+        }
+
+        if (chain.size() == 1 && isExplicitTrustAnchor(chain.get(0), trustAnchors)) {
+            return;
+        }
+
+        throw new IllegalStateException("Untrusted X.509 certificate chain in x5c header", last);
+    }
+
+    private boolean isSelfSigned(X509Certificate certificate) {
+        try {
+            if (!certificate.getSubjectX500Principal().equals(certificate.getIssuerX500Principal())) {
+                return false;
+            }
+            certificate.verify(certificate.getPublicKey());
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isExplicitTrustAnchor(X509Certificate certificate, Set<TrustAnchor> trustAnchors) {
+        try {
+            byte[] encoded = certificate.getEncoded();
+            for (TrustAnchor anchor : trustAnchors) {
+                X509Certificate trusted = anchor.getTrustedCert();
+                if (trusted != null && Arrays.equals(encoded, trusted.getEncoded())) {
+                    return true;
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private Set<TrustAnchor> x509TrustAnchors() throws Exception {
+        Set<TrustAnchor> cached = cachedX509TrustAnchors;
+        if (cached != null) {
+            return cached;
+        }
+        synchronized (this) {
+            if (cachedX509TrustAnchors != null) {
+                return cachedX509TrustAnchors;
+            }
+            Set<TrustAnchor> anchors = new HashSet<>();
+            anchors.addAll(systemTrustAnchors());
+            if (walletProperties.x509TrustAnchorsPem() != null) {
+                anchors.addAll(pemTrustAnchors(walletProperties.x509TrustAnchorsPem()));
+            }
+            cachedX509TrustAnchors = anchors;
+            return anchors;
+        }
+    }
+
+    private Set<TrustAnchor> systemTrustAnchors() throws Exception {
+        TrustManagerFactory tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+        tmf.init((KeyStore) null);
+        for (TrustManager manager : tmf.getTrustManagers()) {
+            if (manager instanceof X509TrustManager x509) {
+                Set<TrustAnchor> anchors = new HashSet<>();
+                for (X509Certificate cert : x509.getAcceptedIssuers()) {
+                    anchors.add(new TrustAnchor(cert, null));
+                }
+                return anchors;
+            }
+        }
+        return Set.of();
+    }
+
+    private Set<TrustAnchor> pemTrustAnchors(Path pemFile) throws Exception {
+        if (!Files.exists(pemFile)) {
+            throw new IllegalStateException("X.509 trust anchor file not found: " + pemFile.toAbsolutePath());
+        }
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        try (InputStream is = Files.newInputStream(pemFile)) {
+            Set<TrustAnchor> anchors = new HashSet<>();
+            for (Certificate cert : cf.generateCertificates(is)) {
+                if (cert instanceof X509Certificate x509) {
+                    anchors.add(new TrustAnchor(x509, null));
+                }
+            }
+            return anchors;
+        }
+    }
+
     private String extractClientMetadata(Object claim) {
+        if (claim == null) {
+            return null;
+        }
+        if (claim instanceof String str) {
+            return str;
+        }
+        try {
+            return objectMapper.writeValueAsString(claim);
+        } catch (Exception e) {
+            return claim.toString();
+        }
+    }
+
+    private String extractJsonClaim(Object claim) {
         if (claim == null) {
             return null;
         }
@@ -849,20 +1289,51 @@ public class Oid4vpController {
         }
     }
 
+    /**
+     * Derives a client_id from a URI by extracting its origin.
+     * Per OID4VP DC API spec, for web verifiers the client_id is the origin.
+     */
+    private String deriveClientIdFromUri(String uri) {
+        if (uri == null || uri.isBlank()) {
+            return null;
+        }
+        try {
+            URI parsed = URI.create(uri);
+            String scheme = parsed.getScheme();
+            String host = parsed.getHost();
+            int port = parsed.getPort();
+            if (scheme == null || host == null) {
+                return null;
+            }
+            boolean includePort = port != -1
+                    && !((port == 80 && "http".equalsIgnoreCase(scheme))
+                    || (port == 443 && "https".equalsIgnoreCase(scheme)));
+            if (includePort) {
+                return "%s://%s:%d".formatted(scheme.toLowerCase(), host, port);
+            }
+            return "%s://%s".formatted(scheme.toLowerCase(), host);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     private record PendingRequest(String state,
                                   String nonce,
                                   String responseUri,
                                   String clientId,
                                   String dcqlQuery,
                                   String clientMetadata,
+                                  String responseMode,
                                   PresentationService.PresentationOptions options,
                                   Map<String, String> selections) {
         PendingRequest withOptions(PresentationService.PresentationOptions o) {
-            return new PendingRequest(state, nonce, responseUri, clientId, dcqlQuery, clientMetadata, o, selections);
+            return new PendingRequest(state, nonce, responseUri, clientId, dcqlQuery, clientMetadata, responseMode,
+                    o, selections);
         }
 
         PendingRequest withSelections(Map<String, String> newSelections) {
-            return new PendingRequest(state, nonce, responseUri, clientId, dcqlQuery, clientMetadata, options, newSelections);
+            return new PendingRequest(state, nonce, responseUri, clientId, dcqlQuery, clientMetadata, responseMode,
+                    options, newSelections);
         }
     }
 }

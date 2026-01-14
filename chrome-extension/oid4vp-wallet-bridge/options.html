@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>OID4VP Wallet Bridge Options</title>
+    <style>
+      body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 16px; max-width: 720px; }
+      label { display:block; font-weight: 600; margin-top: 12px; }
+      input { width: 100%; padding: 8px; font-size: 14px; box-sizing: border-box; }
+      .row { display:flex; gap: 12px; }
+      .row > div { flex: 1; }
+      .hint { color: #555; font-size: 12px; margin-top: 4px; }
+      .actions { margin-top: 16px; display:flex; gap: 12px; align-items: center; }
+      button { padding: 8px 12px; font-size: 14px; }
+      .status { font-size: 13px; color: #0a7; }
+    </style>
+  </head>
+  <body>
+    <h1 style="margin-top:0;">OID4VP Wallet Bridge</h1>
+    <p style="margin:0 0 12px;">
+      This extension intercepts <code>navigator.credentials.get({ digital: ... })</code> OpenID4VP requests and forwards them
+      to a configurable web wallet endpoint (via a popup).
+    </p>
+
+    <label>
+      Enable bridge
+      <input id="enabled" type="checkbox" style="width:auto;" />
+    </label>
+
+    <label for="walletAuthEndpoint">Wallet auth endpoint</label>
+    <input id="walletAuthEndpoint" type="text" placeholder="http://localhost:3000/oid4vp/auth" />
+    <div class="hint">
+      Optional. Leave empty to auto-detect a wallet link on the page; otherwise defaults to <code>http://localhost:3000/oid4vp/auth</code>.
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="popupWidth">Popup width</label>
+        <input id="popupWidth" type="number" min="320" max="1200" step="1" />
+      </div>
+      <div>
+        <label for="popupHeight">Popup height</label>
+        <input id="popupHeight" type="number" min="320" max="1600" step="1" />
+      </div>
+    </div>
+
+    <label for="customSites">Additional sites (one URL pattern per line)</label>
+    <textarea id="customSites" rows="5" style="width:100%; font-family:monospace; font-size:13px;" placeholder="https://example.com/*&#10;https://*.example.org/*"></textarea>
+    <div class="hint">
+      Add URL patterns for additional sites where the bridge should be active. Uses <a href="https://developer.chrome.com/docs/extensions/develop/concepts/match-patterns" target="_blank">match patterns</a>.
+      <br>Built-in: Keycloak realms (<code>*/realms/*/login-actions/*</code>, etc.) and <code>digital-credentials.dev</code>.
+    </div>
+
+    <div class="actions">
+      <button id="save">Save</button>
+      <span id="status" class="status" aria-live="polite"></span>
+    </div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

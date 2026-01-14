@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.common.sdjwt;
 
 import com.authlete.sd.Disclosure;
@@ -8,6 +23,8 @@ import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 import com.nimbusds.jwt.SignedJWT;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
@@ -15,6 +32,8 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
+import java.util.Base64;
+import java.util.LinkedHashMap;
 
 public final class SdJwtUtils {
     private static final String DEFAULT_HASH_ALGORITHM = "sha-256";
@@ -24,27 +43,69 @@ public final class SdJwtUtils {
 
     public static SdJwtParts split(String token) {
         if (token == null || token.isBlank()) {
-            return new SdJwtParts(null, List.of());
+            return new SdJwtParts(null, List.of(), null);
         }
         try {
             SDJWT parsed = SDJWT.parse(token);
             List<String> disclosures = parsed.getDisclosures().stream()
                     .map(Disclosure::getDisclosure)
                     .toList();
-            return new SdJwtParts(parsed.getCredentialJwt(), disclosures);
+            return new SdJwtParts(parsed.getCredentialJwt(), disclosures, parsed.getBindingJwt());
         } catch (Exception e) {
             String[] segments = token.split("~");
             String signedJwt = segments.length > 0 ? segments[0] : token;
             List<String> disclosures = new ArrayList<>();
-            for (int i = 1; i < segments.length; i++) {
+            String keyBindingJwt = null;
+            int end = segments.length;
+            if (segments.length > 1) {
+                String last = segments[segments.length - 1];
+                if (looksLikeJwt(last)) {
+                    keyBindingJwt = last;
+                    end = segments.length - 1;
+                }
+            }
+            for (int i = 1; i < end; i++) {
                 String disclosure = segments[i];
                 if (disclosure != null && !disclosure.isBlank()) {
                     disclosures.add(disclosure);
                 }
             }
-            return new SdJwtParts(signedJwt, disclosures);
+            return new SdJwtParts(signedJwt, disclosures, keyBindingJwt);
         }
     }
+
+    /**
+     * Computes the {@code sd_hash} for a presented SD-JWT and its selected disclosures,
+     * as defined by the SD-JWT specification (hash over {@code <JWT>~<disc1>~...~}).
+     */
+    public static String computeSdHash(SdJwtParts parts, ObjectMapper mapper) throws Exception {
+        if (parts == null || parts.signedJwt() == null || parts.signedJwt().isBlank()) {
+            return null;
+        }
+        SignedJWT jwt = SignedJWT.parse(parts.signedJwt());
+        Map<String, Object> payload = mapper.readValue(jwt.getPayload().toBytes(), new TypeReference<>() {});
+        String hashAlgorithm = resolveHashAlgorithm(payload);
+        MessageDigest digest = MessageDigest.getInstance(toMessageDigestName(hashAlgorithm));
+        StringBuilder toHash = new StringBuilder(parts.signedJwt()).append('~');
+        if (parts.disclosures() != null) {
+            for (String disclosure : parts.disclosures()) {
+                if (disclosure != null && !disclosure.isBlank()) {
+                    toHash.append(disclosure).append('~');
+                }
+            }
+        }
+        byte[] bytes = toHash.toString().getBytes(StandardCharsets.US_ASCII);
+        byte[] hashed = digest.digest(bytes);
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(hashed);
+    }
+
+    /**
+     * Standard JWT claims that should always be preserved from the original payload.
+     * These are not selectively disclosable and should be included in the result.
+     */
+    private static final Set<String> STANDARD_JWT_CLAIMS = Set.of(
+            "iss", "sub", "aud", "exp", "nbf", "iat", "jti", "vct", "cnf"
+    );
 
     public static Map<String, Object> extractDisclosedClaims(SdJwtParts parts, ObjectMapper mapper) throws Exception {
         if (parts == null || parts.signedJwt() == null || parts.signedJwt().isBlank()) {
@@ -53,13 +114,25 @@ public final class SdJwtUtils {
         SignedJWT jwt = SignedJWT.parse(parts.signedJwt());
         Map<String, Object> payload = mapper.readValue(jwt.getPayload().toBytes(), new TypeReference<>() {});
         SDObjectDecoder decoder = new SDObjectDecoder();
-        Map<String, Object> decodedPayload = decoder.decode(payload, parseDisclosures(parts.disclosures()));
-        Map<String, Object> vc = asMap(decodedPayload.get("vc"));
+        List<Disclosure> disclosures = parseDisclosures(parts.disclosures());
+        Map<String, Object> decodedPayload = decoder.decode(payload, disclosures);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> fullyDecodedPayload = (Map<String, Object>) deepDecode(decodedPayload, decoder, disclosures);
+
+        // Preserve standard JWT claims from the original payload
+        // These are not selectively disclosable but are important for verification
+        for (String claim : STANDARD_JWT_CLAIMS) {
+            if (payload.containsKey(claim) && !fullyDecodedPayload.containsKey(claim)) {
+                fullyDecodedPayload.put(claim, payload.get(claim));
+            }
+        }
+
+        Map<String, Object> vc = asMap(fullyDecodedPayload.get("vc"));
         Map<String, Object> subject = vc != null ? asMap(vc.get("credentialSubject")) : null;
         if (subject == null) {
-            subject = asMap(decodedPayload.get("credentialSubject"));
+            subject = asMap(fullyDecodedPayload.get("credentialSubject"));
         }
-        return subject != null ? subject : decodedPayload;
+        return subject != null ? subject : fullyDecodedPayload;
     }
 
     public static boolean verifyDisclosures(SignedJWT jwt, SdJwtParts parts, ObjectMapper mapper) throws Exception {
@@ -68,17 +141,29 @@ public final class SdJwtUtils {
         }
         Map<String, Object> payload = mapper.readValue(jwt.getPayload().toBytes(), new TypeReference<>() {});
         String hashAlgorithm = resolveHashAlgorithm(payload);
-        Set<String> digests = collectDigests(payload);
-        for (Disclosure disclosure : parseDisclosures(parts.disclosures())) {
-            String digest = disclosure.digest(hashAlgorithm);
-            if (!digests.remove(digest)) {
-                return false;
+        Set<String> availableDigests = new HashSet<>(collectDigests(payload));
+        List<Disclosure> remaining = new ArrayList<>(parseDisclosures(parts.disclosures()));
+
+        boolean progress = true;
+        while (progress && !remaining.isEmpty()) {
+            progress = false;
+            for (int i = 0; i < remaining.size(); ) {
+                Disclosure disclosure = remaining.get(i);
+                String digest = disclosure.digest(hashAlgorithm);
+                if (!availableDigests.remove(digest)) {
+                    i++;
+                    continue;
+                }
+                collectDigestsRecursive(disclosure.getClaimValue(), availableDigests);
+                remaining.remove(i);
+                progress = true;
             }
         }
-        return true;
+
+        return remaining.isEmpty();
     }
 
-    public record SdJwtParts(String signedJwt, List<String> disclosures) {
+    public record SdJwtParts(String signedJwt, List<String> disclosures, String keyBindingJwt) {
     }
 
     private static List<Disclosure> parseDisclosures(Collection<String> disclosures) {
@@ -98,12 +183,72 @@ public final class SdJwtUtils {
         return result;
     }
 
+    @SuppressWarnings("unchecked")
+    private static Object deepDecode(Object node, SDObjectDecoder decoder, Collection<Disclosure> disclosures) {
+        if (node instanceof Map<?, ?> map) {
+            Map<String, Object> decoded;
+            try {
+                decoded = decoder.decode((Map<String, Object>) map, disclosures);
+            } catch (Exception e) {
+                decoded = (Map<String, Object>) map;
+            }
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> entry : decoded.entrySet()) {
+                String key = entry.getKey();
+                out.put(key, deepDecode(entry.getValue(), decoder, disclosures));
+            }
+            return out;
+        }
+        if (node instanceof List<?> list) {
+            List<Object> decoded;
+            try {
+                decoded = decoder.decode(list, disclosures);
+            } catch (Exception e) {
+                decoded = new ArrayList<>(list);
+            }
+            List<Object> out = new ArrayList<>(decoded.size());
+            for (Object item : decoded) {
+                out.add(deepDecode(item, decoder, disclosures));
+            }
+            return out;
+        }
+        return node;
+    }
+
     private static String resolveHashAlgorithm(Map<String, Object> payload) {
         Object alg = payload.get("_sd_alg");
         if (alg instanceof String value && !value.isBlank()) {
             return value;
         }
         return DEFAULT_HASH_ALGORITHM;
+    }
+
+    private static String toMessageDigestName(String sdAlg) {
+        if (sdAlg == null || sdAlg.isBlank()) {
+            return "SHA-256";
+        }
+        return switch (sdAlg.toLowerCase()) {
+            case "sha-256", "sha256" -> "SHA-256";
+            case "sha-384", "sha384" -> "SHA-384";
+            case "sha-512", "sha512" -> "SHA-512";
+            default -> "SHA-256";
+        };
+    }
+
+    private static boolean looksLikeJwt(String candidate) {
+        if (candidate == null || candidate.isBlank()) {
+            return false;
+        }
+        long dots = candidate.chars().filter(c -> c == '.').count();
+        if (dots != 2) {
+            return false;
+        }
+        try {
+            SignedJWT.parse(candidate);
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     private static Set<String> collectDigests(Object node) {

@@ -1,0 +1,189 @@
+{
+  "realm": "oid4vp-test",
+  "enabled": true,
+  "sslRequired": "none",
+  "displayName": "OID4VP Test",
+  "loginTheme": "oid4vp",
+  "clients": [
+    {
+      "clientId": "test-client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "secret": "secret",
+      "redirectUris": [
+        "http://localhost/callback"
+      ],
+      "standardFlowEnabled": true
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "oid4vp",
+      "displayName": "Sign in with Wallet",
+      "providerId": "oid4vp",
+      "enabled": true,
+      "trustEmail": false,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "authenticateByDefault": false,
+      "linkOnly": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "not-used",
+        "clientSecret": "not-used",
+        "trustListJson": "{\"issuers\":[{\"name\":\"mock-issuer-es256\",\"certificate\":\"-----BEGIN CERTIFICATE-----\\nMIIBgTCCASegAwIBAgIUBjEaIhGcW5pPX7vCtXbqMyql7ewwCgYIKoZIzj0EAwIw\\nFjEUMBIGA1UEAwwLbW9jay1pc3N1ZXIwHhcNMjUxMjAxMDkzOTI2WhcNMzUxMTI5\\nMDkzOTI2WjAWMRQwEgYDVQQDDAttb2NrLWlzc3VlcjBZMBMGByqGSM49AgEGCCqG\\nSM49AwEHA0IABCSGo02fNJ4ilyIJVsnR90UMvBEhbDxpvIN/X+Rq4y9qjCA35Inb\\nwm5jF0toypoov4aagJGaRkwzmvOy1JMlamKjUzBRMB0GA1UdDgQWBBR2mOx26507\\n8nBXsRCf07e99RBlDDAfBgNVHSMEGDAWgBR2mOx265078nBXsRCf07e99RBlDDAP\\nBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDc1Evb58VWAGTNgiad\\nstQmCL6YL3ChASt/VLhgA/ogbAIgK5DjLQuY0dVDTaDccEC9s/uaKu+z5u28ZtQj\\nVK65zFU=\\n-----END CERTIFICATE-----\"}]}",
+        "userMappingClaim": "document_number",
+        "userMappingClaimMdoc": "document_number",
+        "dcApiRequestMode": "signed"
+      }
+    }
+  ],
+  "identityProviderMappers": [
+    {
+      "name": "sd-jwt-family_name-to-lastName",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:1",
+        "claim": "family_name",
+        "user.attribute": "lastName"
+      }
+    },
+    {
+      "name": "sd-jwt-given_name-to-firstName",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:1",
+        "claim": "given_name",
+        "user.attribute": "firstName"
+      }
+    },
+    {
+      "name": "sd-jwt-birthdate-to-attribute",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:1",
+        "claim": "birthdate",
+        "user.attribute": "birthdate"
+      }
+    },
+    {
+      "name": "mdoc-family_name-to-lastName",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "mso_mdoc",
+        "credential.type": "eu.europa.ec.eudi.pid.1",
+        "claim": "family_name",
+        "user.attribute": "lastName"
+      }
+    },
+    {
+      "name": "mdoc-given_name-to-firstName",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "mso_mdoc",
+        "credential.type": "eu.europa.ec.eudi.pid.1",
+        "claim": "given_name",
+        "user.attribute": "firstName"
+      }
+    },
+    {
+      "name": "mdoc-birth_date-to-attribute",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "mso_mdoc",
+        "credential.type": "eu.europa.ec.eudi.pid.1",
+        "claim": "birth_date",
+        "user.attribute": "birthdate"
+      }
+    },
+    {
+      "name": "sd-jwt-nationalities-optional",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:1",
+        "claim": "nationalities",
+        "user.attribute": "nationalities",
+        "optional": "true"
+      }
+    },
+    {
+      "name": "mdoc-nationality-optional",
+      "identityProviderAlias": "oid4vp",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "mso_mdoc",
+        "credential.type": "eu.europa.ec.eudi.pid.1",
+        "claim": "nationality",
+        "user.attribute": "nationality",
+        "optional": "true"
+      }
+    }
+  ],
+  "users": [
+    {
+      "username": "test",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "User",
+      "email": "test@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "test2",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test2",
+      "lastName": "User",
+      "email": "test2@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    },
+    {
+      "username": "test3",
+      "enabled": true,
+      "emailVerified": true,
+      "firstName": "Test3",
+      "lastName": "User",
+      "email": "test3@example.com",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "test",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}

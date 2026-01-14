@@ -1,35 +1,65 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.common.sdjwt;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
+import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.RSAKey;
 import com.nimbusds.jwt.SignedJWT;
-import de.arbeitsagentur.keycloak.wallet.common.sdjwt.TrustedIssuerResolver;
-import de.arbeitsagentur.keycloak.wallet.common.sdjwt.VerificationStepSink;
+import de.arbeitsagentur.keycloak.wallet.common.credential.TrustedIssuerResolver;
+import de.arbeitsagentur.keycloak.wallet.common.credential.VerificationStepSink;
 
 import java.security.PublicKey;
 import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Base64;
 import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Verifies SD-JWT credentials including issuer signature, disclosures and optional holder binding.
  */
 public class SdJwtVerifier {
+    private static final Logger LOG = LoggerFactory.getLogger(SdJwtVerifier.class);
+    /** Default maximum age for KB-JWT iat claim to prevent replay attacks (5 minutes) */
+    public static final Duration DEFAULT_KB_JWT_MAX_AGE = Duration.ofMinutes(5);
+
     private final SdJwtParser sdJwtParser;
     private final ObjectMapper objectMapper;
     private final TrustedIssuerResolver trustResolver;
+    private final Duration kbJwtMaxAge;
 
     public SdJwtVerifier(ObjectMapper objectMapper, TrustedIssuerResolver trustResolver) {
+        this(objectMapper, trustResolver, DEFAULT_KB_JWT_MAX_AGE);
+    }
+
+    public SdJwtVerifier(ObjectMapper objectMapper, TrustedIssuerResolver trustResolver, Duration kbJwtMaxAge) {
         this.sdJwtParser = new SdJwtParser(objectMapper);
         this.objectMapper = objectMapper;
         this.trustResolver = trustResolver;
+        this.kbJwtMaxAge = kbJwtMaxAge != null ? kbJwtMaxAge : DEFAULT_KB_JWT_MAX_AGE;
     }
 
     public boolean isSdJwt(String token) {
@@ -42,16 +72,21 @@ public class SdJwtVerifier {
                                       String expectedNonce,
                                       String keyBindingJwt,
                                       VerificationStepSink steps) throws Exception {
+        LOG.debug("verify() called with: trustListId={}, expectedAudience={}, expectedNonce={}",
+                trustListId, expectedAudience, expectedNonce);
         SdJwtUtils.SdJwtParts parts = sdJwtParser.split(sdJwt);
         SignedJWT jwt = SignedJWT.parse(parts.signedJwt());
+        validateSdJwtType(jwt);
         if (steps != null) {
             steps.add("Parsed SD-JWT presentation",
                     "Parsed SD-JWT based presentation and prepared for signature/disclosure checks.",
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6");
         }
         if (!trustResolver.verify(jwt, trustListId)) {
+            LOG.debug("Signature verification failed against trust list");
             throw new IllegalStateException("Credential signature not trusted");
         }
+        LOG.debug("Signature verified successfully");
         if (steps != null) {
             steps.add("Signature verified against trust-list.json",
                     "Checked JWT/SD-JWT signature against trusted issuers in the trust list.",
@@ -69,22 +104,107 @@ public class SdJwtVerifier {
                     "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6-2.2.2.1");
         }
         Map<String, Object> claims = new LinkedHashMap<>(SdJwtUtils.extractDisclosedClaims(parts, objectMapper));
-        if (keyBindingJwt != null && !keyBindingJwt.isBlank()) {
-            verifyHolderBinding(keyBindingJwt, sdJwt, expectedAudience, expectedNonce);
+        String embeddedKeyBinding = parts.keyBindingJwt();
+        String effectiveKeyBinding = embeddedKeyBinding != null && !embeddedKeyBinding.isBlank()
+                ? embeddedKeyBinding
+                : keyBindingJwt;
+        if (embeddedKeyBinding != null && keyBindingJwt != null
+                && !embeddedKeyBinding.isBlank()
+                && !keyBindingJwt.isBlank()
+                && !Objects.equals(embeddedKeyBinding, keyBindingJwt)) {
+            throw new IllegalStateException("Key binding JWT mismatch");
+        }
+        if (effectiveKeyBinding != null && !effectiveKeyBinding.isBlank()) {
+            verifyHolderBinding(effectiveKeyBinding, parts, expectedAudience, expectedNonce);
             if (steps != null) {
                 steps.add("Validated holder binding",
                         "Validated KB-JWT holder binding: cnf key matches credential and signature verified.",
                         "https://openid.net/specs/openid-4-verifiable-presentations-1_0.html#section-8.6-2.2.2.4");
             }
-            claims.put("key_binding_jwt", keyBindingJwt);
+            claims.put("key_binding_jwt", effectiveKeyBinding);
         }
         return claims;
+    }
+
+    public void verifyHolderBinding(String keyBindingJwt,
+                                    SdJwtUtils.SdJwtParts presentationParts,
+                                    String expectedAudience,
+                                    String expectedNonce) throws Exception {
+        if (keyBindingJwt == null || keyBindingJwt.isBlank()) {
+            throw new IllegalStateException("Missing key binding JWT");
+        }
+        if (presentationParts == null || presentationParts.signedJwt() == null || presentationParts.signedJwt().isBlank()) {
+            throw new IllegalStateException("Missing SD-JWT");
+        }
+        SignedJWT holderBinding = SignedJWT.parse(keyBindingJwt);
+        validateKeyBindingType(holderBinding);
+        PublicKey credentialKey = extractHolderKey(presentationParts.signedJwt());
+        if (credentialKey == null) {
+            throw new IllegalStateException("SD-JWT does not contain a holder binding key (cnf)");
+        }
+        if (!TrustedIssuerResolver.verifyWithKey(holderBinding, credentialKey)) {
+            throw new IllegalStateException("Holder binding signature invalid");
+        }
+        if (holderBinding.getJWTClaimsSet().getIssueTime() == null) {
+            throw new IllegalStateException("Presentation missing iat");
+        }
+        // Check KB-JWT max age to prevent replay attacks
+        Instant issuedAt = holderBinding.getJWTClaimsSet().getIssueTime().toInstant();
+        Instant now = Instant.now();
+        if (issuedAt.isAfter(now.plusSeconds(60))) {
+            // Allow small clock skew (60 seconds) for iat in the future
+            throw new IllegalStateException("Presentation iat is in the future");
+        }
+        if (issuedAt.plus(kbJwtMaxAge).isBefore(now)) {
+            throw new IllegalStateException("Presentation too old (iat exceeds max age of " + kbJwtMaxAge.toSeconds() + "s)");
+        }
+        if (holderBinding.getJWTClaimsSet().getExpirationTime() != null
+                && holderBinding.getJWTClaimsSet().getExpirationTime().toInstant().isBefore(now)) {
+            throw new IllegalStateException("Presentation has expired");
+        }
+        if (holderBinding.getJWTClaimsSet().getNotBeforeTime() != null
+                && holderBinding.getJWTClaimsSet().getNotBeforeTime().toInstant().isAfter(now)) {
+            throw new IllegalStateException("Presentation not yet valid");
+        }
+        if (expectedAudience == null || expectedAudience.isBlank()) {
+            throw new IllegalStateException("Expected audience missing");
+        }
+        if (holderBinding.getJWTClaimsSet().getAudience() == null || holderBinding.getJWTClaimsSet().getAudience().isEmpty()) {
+            throw new IllegalStateException("Presentation missing aud");
+        }
+        String aud = holderBinding.getJWTClaimsSet().getAudience().get(0);
+        if (!expectedAudience.equals(aud)) {
+            LOG.error("Audience mismatch: expected='{}', actual='{}'", expectedAudience, aud);
+            throw new IllegalStateException("Audience mismatch in presentation: expected='" + expectedAudience + "', actual='" + aud + "'");
+        }
+        if (expectedNonce == null || expectedNonce.isBlank()) {
+            throw new IllegalStateException("Expected nonce missing");
+        }
+        String nonce = holderBinding.getJWTClaimsSet().getStringClaim("nonce");
+        if (nonce == null || nonce.isBlank()) {
+            throw new IllegalStateException("Presentation missing nonce");
+        }
+        if (!expectedNonce.equals(nonce)) {
+            throw new IllegalStateException("Nonce mismatch in presentation");
+        }
+        String sdHash = holderBinding.getJWTClaimsSet().getStringClaim("sd_hash");
+        if (sdHash == null || sdHash.isBlank()) {
+            throw new IllegalStateException("Presentation missing sd_hash");
+        }
+        String expectedSdHash = SdJwtUtils.computeSdHash(presentationParts, objectMapper);
+        if (expectedSdHash == null || !expectedSdHash.equals(sdHash)) {
+            throw new IllegalStateException("sd_hash mismatch in presentation");
+        }
     }
 
     public void verifyHolderBinding(String keyBindingJwt,
                                     String credentialToken,
                                     String expectedAudience,
                                     String expectedNonce) throws Exception {
+        if (isSdJwt(credentialToken)) {
+            verifyHolderBinding(keyBindingJwt, sdJwtParser.split(credentialToken), expectedAudience, expectedNonce);
+            return;
+        }
         if (keyBindingJwt == null || keyBindingJwt.isBlank()) {
             return;
         }
@@ -145,6 +265,34 @@ public class SdJwtVerifier {
             if (nonce != null && !expectedNonce.equals(nonce)) {
                 throw new IllegalStateException("Nonce mismatch in presentation");
             }
+        }
+    }
+
+    private void validateSdJwtType(SignedJWT jwt) {
+        if (jwt == null || jwt.getHeader() == null) {
+            throw new IllegalStateException("Invalid SD-JWT header");
+        }
+        JOSEObjectType type = jwt.getHeader().getType();
+        if (type == null || type.toString().isBlank()) {
+            throw new IllegalStateException("SD-JWT missing typ header");
+        }
+        String value = type.toString();
+        if (!"dc+sd-jwt".equals(value) && !"vc+sd-jwt".equals(value) && !"JWT".equals(value) && !"JWS".equals(value)) {
+            throw new IllegalStateException("Invalid SD-JWT typ: " + value);
+        }
+    }
+
+    private void validateKeyBindingType(SignedJWT jwt) {
+        if (jwt == null || jwt.getHeader() == null) {
+            throw new IllegalStateException("Invalid key binding header");
+        }
+        JOSEObjectType type = jwt.getHeader().getType();
+        if (type == null || type.toString().isBlank()) {
+            throw new IllegalStateException("Key binding JWT missing typ header");
+        }
+        String value = type.toString();
+        if (!"kb+jwt".equals(value)) {
+            throw new IllegalStateException("Invalid key binding JWT typ: " + value);
         }
     }
 

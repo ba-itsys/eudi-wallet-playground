@@ -1,0 +1,742 @@
+{
+  "realm": "pid-binding-demo",
+  "enabled": true,
+  "sslRequired": "none",
+  "displayName": "German PID Binding Demo",
+  "loginTheme": "oid4vp",
+  "roles": {
+    "realm": [
+      {
+        "name": "default-roles-pid-binding-demo",
+        "description": "${role_default-roles}",
+        "composite": true,
+        "composites": {
+          "client": {
+            "account": [
+              "manage-account",
+              "manage-account-links",
+              "view-profile"
+            ]
+          }
+        },
+        "clientRole": false,
+        "attributes": {}
+      }
+    ],
+    "client": {
+      "account": [
+        {
+          "name": "manage-account",
+          "description": "${role_manage-account}",
+          "composite": true,
+          "composites": {
+            "client": {
+              "account": [
+                "manage-account-links"
+              ]
+            }
+          },
+          "clientRole": true,
+          "attributes": {}
+        },
+        {
+          "name": "manage-account-links",
+          "description": "${role_manage-account-links}",
+          "composite": false,
+          "clientRole": true,
+          "attributes": {}
+        },
+        {
+          "name": "view-profile",
+          "description": "${role_view-profile}",
+          "composite": false,
+          "clientRole": true,
+          "attributes": {}
+        }
+      ]
+    }
+  },
+  "groups": [],
+  "defaultRole": {
+    "name": "default-roles-pid-binding-demo",
+    "description": "${role_default-roles}",
+    "composite": true,
+    "clientRole": false
+  },
+  "attributes": {
+    "preAuthorizedCodeLifespanS": "300",
+    "cNonceLifespanSec": "300",
+    "oid4vciEnabled": "true",
+    "userProfileEnabled": "true",
+    "userProfileUnmanagedAttributes": "true"
+  },
+  "requiredActions": [
+    {
+      "alias": "CONFIGURE_TOTP",
+      "name": "Configure OTP",
+      "providerId": "CONFIGURE_TOTP",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 10,
+      "config": {}
+    },
+    {
+      "alias": "UPDATE_PASSWORD",
+      "name": "Update Password",
+      "providerId": "UPDATE_PASSWORD",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 30,
+      "config": {}
+    },
+    {
+      "alias": "UPDATE_PROFILE",
+      "name": "Update Profile",
+      "providerId": "UPDATE_PROFILE",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 40,
+      "config": {}
+    },
+    {
+      "alias": "VERIFY_EMAIL",
+      "name": "Verify Email",
+      "providerId": "VERIFY_EMAIL",
+      "enabled": true,
+      "defaultAction": false,
+      "priority": 50,
+      "config": {}
+    }
+  ],
+  "users": [],
+  "clientScopeMappings": {
+    "account": [
+      {
+        "client": "account-console",
+        "roles": [
+          "manage-account",
+          "view-groups"
+        ]
+      }
+    ]
+  },
+  "clientScopes": [
+    {
+      "name": "user-binding-credential",
+      "description": "User Binding Credential - issued after German PID verification",
+      "protocol": "oid4vc",
+      "attributes": {
+        "consent.screen.text": "Issue user binding credential",
+        "display.on.consent.screen": "true",
+        "include.in.token.scope": "true",
+        "vc.credential_configuration_id": "user-binding-credential",
+        "vc.credential_identifier": "user-binding-credential",
+        "vc.verifiable_credential_type": "urn:verifier:user_credential:1",
+        "vc.supported_credential_types": "VerifiableCredential,urn:verifier:user_credential:1",
+        "vc.credential_contexts": "https://www.w3.org/2018/credentials/v1",
+        "vc.format": "dc+sd-jwt",
+        "vc.proof_signing_alg_values_supported": "ES256",
+        "vc.display": "[{\"name\":\"User Binding Credential\",\"locale\":\"en\"}]",
+        "vc.credential_build_config.hash_algorithm": "SHA-256",
+        "vc.credential_build_config.token_jws_type": "JWS"
+      },
+      "protocolMappers": [
+        {
+          "name": "user-id",
+          "protocol": "oid4vc",
+          "protocolMapper": "oid4vc-user-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "user_id",
+            "userAttribute": "id",
+            "jsonType.label": "String",
+            "vc.mandatory": "true",
+            "vc.display": "[{\"name\":\"User ID\",\"locale\":\"en\"}]"
+          }
+        },
+        {
+          "name": "linked-at",
+          "protocol": "oid4vc",
+          "protocolMapper": "oid4vc-static-claim-mapper",
+          "consentRequired": false,
+          "config": {
+            "claim.name": "linked_at",
+            "claim.value": "${timestamp}",
+            "jsonType.label": "String",
+            "vc.mandatory": "true",
+            "vc.display": "[{\"name\":\"Linked at\",\"locale\":\"en\"}]"
+          }
+        }
+      ]
+    },
+    {
+      "name": "profile",
+      "description": "OpenID Connect built-in scope: profile",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "consent.screen.text": "${profileScopeConsentText}",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "username",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "username",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "preferred_username",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "full name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-full-name-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "given name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "firstName",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "given_name",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "family name",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "lastName",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "family_name",
+            "jsonType.label": "String"
+          }
+        }
+      ]
+    },
+    {
+      "name": "email",
+      "description": "OpenID Connect built-in scope: email",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "true",
+        "consent.screen.text": "${emailScopeConsentText}",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "email",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "email",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "email",
+            "jsonType.label": "String"
+          }
+        },
+        {
+          "name": "email verified",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-property-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "userinfo.token.claim": "true",
+            "user.attribute": "emailVerified",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "email_verified",
+            "jsonType.label": "boolean"
+          }
+        }
+      ]
+    },
+    {
+      "name": "roles",
+      "description": "OpenID Connect scope for add user roles to the access token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "consent.screen.text": "${rolesScopeConsentText}",
+        "display.on.consent.screen": "true"
+      },
+      "protocolMappers": [
+        {
+          "name": "client roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-client-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "foo",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "resource_access.${client_id}.roles",
+            "jsonType.label": "String",
+            "multivalued": "true"
+          }
+        },
+        {
+          "name": "audience resolve",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-resolve-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "realm roles",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "foo",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "realm_access.roles",
+            "jsonType.label": "String",
+            "multivalued": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "web-origins",
+      "description": "OpenID Connect scope for add allowed web origins to the access token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "consent.screen.text": "",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "allowed web origins",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-allowed-origins-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "acr",
+      "description": "OpenID Connect scope for add acr (authentication context class reference) to the token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "acr loa level",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-acr-mapper",
+          "consentRequired": false,
+          "config": {
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    },
+    {
+      "name": "basic",
+      "description": "OpenID Connect scope for add all basic claims to the token",
+      "protocol": "openid-connect",
+      "attributes": {
+        "include.in.token.scope": "false",
+        "display.on.consent.screen": "false"
+      },
+      "protocolMappers": [
+        {
+          "name": "sub",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-sub-mapper",
+          "consentRequired": false,
+          "config": {
+            "introspection.token.claim": "true",
+            "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "auth_time",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usersessionmodel-note-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.session.note": "AUTH_TIME",
+            "id.token.claim": "true",
+            "introspection.token.claim": "true",
+            "access.token.claim": "true",
+            "claim.name": "auth_time",
+            "jsonType.label": "long"
+          }
+        }
+      ]
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "account",
+      "name": "${client_account}",
+      "rootUrl": "${authBaseUrl}",
+      "baseUrl": "/realms/pid-binding-demo/account/",
+      "surrogateAuthRequired": false,
+      "enabled": true,
+      "alwaysDisplayInConsole": false,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": [
+        "/realms/pid-binding-demo/account/*"
+      ],
+      "webOrigins": [],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "publicClient": true,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "realm_client": "false",
+        "post.logout.redirect.uris": "+"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": false,
+      "nodeReRegistrationTimeout": 0,
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "account-console",
+      "name": "${client_account-console}",
+      "rootUrl": "${authBaseUrl}",
+      "baseUrl": "/realms/pid-binding-demo/account/",
+      "surrogateAuthRequired": false,
+      "enabled": true,
+      "alwaysDisplayInConsole": false,
+      "clientAuthenticatorType": "client-secret",
+      "redirectUris": [
+        "/realms/pid-binding-demo/account/*"
+      ],
+      "webOrigins": [],
+      "notBefore": 0,
+      "bearerOnly": false,
+      "consentRequired": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "publicClient": true,
+      "frontchannelLogout": false,
+      "protocol": "openid-connect",
+      "attributes": {
+        "realm_client": "false",
+        "post.logout.redirect.uris": "+",
+        "pkce.code.challenge.method": "S256"
+      },
+      "authenticationFlowBindingOverrides": {},
+      "fullScopeAllowed": false,
+      "nodeReRegistrationTimeout": 0,
+      "protocolMappers": [
+        {
+          "name": "audience resolve",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-resolve-mapper",
+          "consentRequired": false,
+          "config": {}
+        }
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": []
+    },
+    {
+      "clientId": "pid-binding-wallet",
+      "name": "PID Binding Wallet Client",
+      "description": "Client for wallet to obtain user binding credential",
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "secret": "secret-pid-binding",
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "redirectUris": [
+        "*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": [
+        "user-binding-credential"
+      ],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "*",
+        "oid4vci.enabled": "true"
+      }
+    },
+    {
+      "clientId": "demo-app",
+      "name": "Demo Application",
+      "description": "Demo application that uses German PID binding",
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": [
+        "http://localhost:*/*",
+        "http://127.0.0.1:*/*"
+      ],
+      "webOrigins": [
+        "*"
+      ],
+      "defaultClientScopes": [
+        "web-origins",
+        "acr",
+        "profile",
+        "roles",
+        "basic",
+        "email"
+      ],
+      "optionalClientScopes": [],
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "*"
+      }
+    }
+  ],
+  "identityProviders": [
+    {
+      "alias": "german-pid",
+      "displayName": "Sign in with German eID",
+      "providerId": "oid4vp",
+      "enabled": true,
+      "trustEmail": false,
+      "storeToken": false,
+      "addReadTokenRoleOnCreate": false,
+      "authenticateByDefault": false,
+      "linkOnly": false,
+      "firstBrokerLoginFlowAlias": "first broker login",
+      "config": {
+        "clientId": "not-used",
+        "clientSecret": "not-used",
+        "enforceHaip": "true",
+        "dcApiEnabled": "true",
+        "sameDeviceEnabled": "true",
+        "crossDeviceEnabled": "true",
+        "trustListJson": "{\"issuers\":[{\"name\":\"wallet-demo-keycloak-es256\",\"certificate\":\"-----BEGIN CERTIFICATE-----\\nMIIBKDCB0AIJAMWyff2HSfBqMAoGCCqGSM49BAMCMB0xGzAZBgNVBAMMEldhbGxl\\ndC1LZXljbG9hay1FUzAeFw0yNTExMjAyMTM2MDlaFw0zNTExMTgyMTM2MDlaMB0x\\nGzAZBgNVBAMMEldhbGxldC1LZXljbG9hay1FUzBZMBMGByqGSM49AgEGCCqGSM49\\nAwEHA0IABCnd2p3iD21IlzbJMVUUVTyE2FDXQa3eyxYTCSak/hEtbdBdbWmH0nKk\\nd9YklVqIUVD4VpkLDbXjhuuE38B8pQQwCgYIKoZIzj0EAwIDRwAwRAIgLd3B7Vw2\\nOqZJiRzWc3SA52fCFZmDLqAuK4qJ/OOBMEECIDXD3RlynumLDTPm+YQtv6kpsNoT\\nPccoMH7i50+TvmdF\\n-----END CERTIFICATE-----\"},{\"name\":\"mock-issuer-es256\",\"certificate\":\"-----BEGIN CERTIFICATE-----\\nMIIBgTCCASegAwIBAgIUBjEaIhGcW5pPX7vCtXbqMyql7ewwCgYIKoZIzj0EAwIw\\nFjEUMBIGA1UEAwwLbW9jay1pc3N1ZXIwHhcNMjUxMjAxMDkzOTI2WhcNMzUxMTI5\\nMDkzOTI2WjAWMRQwEgYDVQQDDAttb2NrLWlzc3VlcjBZMBMGByqGSM49AgEGCCqG\\nSM49AwEHA0IABCSGo02fNJ4ilyIJVsnR90UMvBEhbDxpvIN/X+Rq4y9qjCA35Inb\\nwm5jF0toypoov4aagJGaRkwzmvOy1JMlamKjUzBRMB0GA1UdDgQWBBR2mOx26507\\n8nBXsRCf07e99RBlDDAfBgNVHSMEGDAWgBR2mOx265078nBXsRCf07e99RBlDDAP\\nBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDc1Evb58VWAGTNgiad\\nstQmCL6YL3ChASt/VLhgA/ogbAIgK5DjLQuY0dVDTaDccEC9s/uaKu+z5u28ZtQj\\nVK65zFU=\\n-----END CERTIFICATE-----\"}]}",
+        "dcqlQuery": "{\"credentials\":[{\"id\":\"german_pid\",\"format\":\"dc+sd-jwt\",\"meta\":{\"vct_values\":[\"urn:eudi:pid:de:1\"]},\"claims\":[{\"path\":[\"family_name\"]},{\"path\":[\"given_name\"]},{\"path\":[\"birthdate\"]},{\"path\":[\"nationalities\"]},{\"path\":[\"issuing_country\"]}]}]}",
+        "userMappingClaim": "given_name",
+        "userMappingClaimMdoc": "given_name",
+        "dcApiRequestMode": "signed",
+        "sameDeviceWalletUrl": "http://localhost:3000/oid4vp/auth",
+        "clientIdScheme": "plain",
+        "credentialSetMode": "optional",
+        "allowedCredentialTypes": "urn:eudi:pid:de:1"
+      }
+    }
+  ],
+  "identityProviderMappers": [
+    {
+      "name": "german-pid-family_name-to-lastName",
+      "identityProviderAlias": "german-pid",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:de:1",
+        "claim": "family_name",
+        "user.attribute": "lastName"
+      }
+    },
+    {
+      "name": "german-pid-given_name-to-firstName",
+      "identityProviderAlias": "german-pid",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:de:1",
+        "claim": "given_name",
+        "user.attribute": "firstName"
+      }
+    },
+    {
+      "name": "german-pid-birthdate-to-attribute",
+      "identityProviderAlias": "german-pid",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:de:1",
+        "claim": "birthdate",
+        "user.attribute": "birthdate"
+      }
+    },
+    {
+      "name": "german-pid-nationalities-to-attribute",
+      "identityProviderAlias": "german-pid",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:de:1",
+        "claim": "nationalities",
+        "user.attribute": "nationalities",
+        "optional": "true"
+      }
+    },
+    {
+      "name": "german-pid-issuing_country-to-attribute",
+      "identityProviderAlias": "german-pid",
+      "identityProviderMapper": "oid4vp-user-attribute-mapper",
+      "config": {
+        "syncMode": "INHERIT",
+        "credential.format": "dc+sd-jwt",
+        "credential.type": "urn:eudi:pid:de:1",
+        "claim": "issuing_country",
+        "user.attribute": "issuing_country",
+        "optional": "true"
+      }
+    }
+  ],
+  "components": {
+    "org.keycloak.userprofile.UserProfileProvider": [
+      {
+        "providerId": "declarative-user-profile",
+        "subComponents": {},
+        "config": {
+          "kc.user.profile.config": [
+            "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"${username}\",\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"email\",\"displayName\":\"${email}\",\"validations\":{\"email\":{},\"length\":{\"max\":255}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"firstName\",\"displayName\":\"${firstName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false},{\"name\":\"lastName\",\"displayName\":\"${lastName}\",\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}},\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"multivalued\":false}],\"groups\":[{\"name\":\"user-metadata\",\"displayHeader\":\"User metadata\",\"displayDescription\":\"Attributes, which refer to user metadata\"}],\"unmanagedAttributePolicy\":\"ENABLED\"}"
+          ]
+        }
+      }
+    ],
+    "org.keycloak.keys.KeyProvider": [
+      {
+        "name": "pid-binding-ec",
+        "providerId": "ecdsa-generated",
+        "config": {
+          "priority": [
+            "110"
+          ],
+          "enabled": [
+            "true"
+          ],
+          "active": [
+            "true"
+          ],
+          "ecdsaEllipticCurveKey": [
+            "P-256"
+          ],
+          "ecdsaPrivateKey": [
+            "MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgaYt5AWrT1JNJXN/3U/R2YCNIpaR8ZLx6BB11RP2djdmhRANCAAQp3dqd4g9tSJc2yTFVFFU8hNhQ10Gt3ssWEwkmpP4RLW3QXW1ph9JypHfWJJVaiFFQ+FaZCw2144brhN/AfKUE"
+          ],
+          "ecdsaPublicKey": [
+            "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKd3aneIPbUiXNskxVRRVPITYUNdBrd7LFhMJJqT+ES1t0F1taYfScqR31iSVWohRUPhWmQsNteOG64TfwHylBA=="
+          ],
+          "certificate": [
+            "MIIBKDCB0AIJAMWyff2HSfBqMAoGCCqGSM49BAMCMB0xGzAZBgNVBAMMEldhbGxldC1LZXljbG9hay1FUzAeFw0yNTExMjAyMTM2MDlaFw0zNTExMTgyMTM2MDlaMB0xGzAZBgNVBAMMEldhbGxldC1LZXljbG9hay1FUzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABCnd2p3iD21IlzbJMVUUVTyE2FDXQa3eyxYTCSak/hEtbdBdbWmH0nKkd9YklVqIUVD4VpkLDbXjhuuE38B8pQQwCgYIKoZIzj0EAwIDRwAwRAIgLd3B7Vw2OqZJiRzWc3SA52fCFZmDLqAuK4qJ/OOBMEECIDXD3RlynumLDTPm+YQtv6kpsNoTPccoMH7i50+TvmdF"
+          ],
+          "ecGenerateCertificate": [
+            "false"
+          ],
+          "algorithm": [
+            "ES256"
+          ]
+        }
+      },
+      {
+        "name": "pid-binding-rsa-enc",
+        "providerId": "rsa-enc",
+        "config": {
+          "priority": [
+            "90"
+          ],
+          "enabled": [
+            "true"
+          ],
+          "active": [
+            "true"
+          ],
+          "algorithm": [
+            "RSA-OAEP-256"
+          ],
+          "privateKey": [
+            "-----BEGIN PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQDGv16dc77qT8aj\n5espoY2/Gsa8nYNyfvbwddaFoNzbYVcC2FpEPqXTlsdBsHUAngsz0a8Eb8H1g/7K\n5pXWsNkuYl2MQOIzdZZ9ll16WdpK8tNcUqJm9zxmGQq22sIYitOWg/CBEUL0SAzi\njnk5gr8hNM1IchEx4I13IxN8dAYIP1JRp99a78GAmO0d0pCzr/cMXHKLsQwbvqc4\n0YmxU1Gc9AUEmaECnUyV1RjoLjkvcw8JeW6qxR+S6tGanMJnGZC+m6RdPMViC5CT\n5C5cKtzM0gUHYDgwAXpJuOu4n28vCWYgqDPPSrdQcX+cW+aY7ztBtPnnpD0SBtyZ\nfoqcBm3zAgMBAAECggEAOR8/flmKAaY0HV8zm5+HMensPMG4yeub5bi4k2eMkrED\nZRnxt7OZzZqEYmjo9+h0p8wYVVoZkQsC7CYh4rapdR9oa6sqWEfvnODetQ+mIexw\nuxQ1AQsGHQINhkiRiKQ99ACv2yiu6a7bpTH1vYXKkSyv46aFMqSrhBZcv2RJZ4zo\n1ScrN9Edsxo9L+9TEHkRtk6bWPNh1mnecrT/99HqFDRW6adMSb5JFkllntTfe6Hg\nxXmHD277p1+Hj9A2fM865VkABJumNs397/GEGVTtXdXN7IHFnmroiN7P+kYnhqTS\nv6Nq1+BhhzxRVzBWQqP/Er4HKzgr8EeUty4BT8psIQKBgQD/9cCIO8O1pJonIbBa\nBbfM+Ilu5KVBFxESBJD7vKKhCq/gDtpDvwpiT19NhFoWznLjAgtlAQobF7IoOS7p\nuk2OhP8Y01WXzuHkVlBYtoCQ6roxfMpUIsbQbD15JqddwSGBpbKaC3o8h593WNJK\n2MJfSsW7f3dKIYdqQy7PbCRSTQKBgQDGx1OuxTHzjkFrcHcytrhdn3sju7i9yI4z\n/lSiAUbtDLci3fXdcKk4Y3TtCcSb7g6EwoT42fpdK9xrocySUGi+esubEJ8bfh8B\n5FG6NX+VgkK5COCO3FlI4gDYYREa/I1bh/owF0YMwchLFXfroBHfFJoxScuKSFtH\n8zkp2QNhPwKBgQDzi0w01Fj1vrcGwOFh5srqdxmdsGUlN+OAN2QUg3pirR6HnNpF\nV8Nzo35U7bgitzFNmqZo5sJM4REdgLuInUIqd5Wac4uftLPvZclxf8V5Hj8n00tZ\nHvX5XuRnIEZjyN4u1BDKzlzyt0EeeB8wJGtd7HGUZEaG/LwyedZSet1ciQKBgCuZ\ntxJDsLQyhMjzL0IRcBkhDRqGZ3xBTGe9JoUucIc4XccpFm/O8V8r+Y6wsM5fBhI6\ntH39GfxrzXpSUBPbzU3Sk2xc1flqzZRVp1OHvodlvgrmFpNfY7on0HWlvOHFeaAV\nEFySDkxoCO3nNJmbT7A1zah3/kxDmLoMcIJsVmBzAoGAdZNHVVysPzNErl1Dl548\nmatCcSXin+bbSvmtkYWFRu5delZ5Rvcb9AU8+ccq33edjQUmRAeJ8/X8JzGJwseS\nv7cY69FZR9TNj6os7OZHore7ngVeVKoLQSwjg4Ara6l4eUxJfeserR3u0NI1gdOM\nh/HXLYymdbEPea+dGgR4NVo=\n-----END PRIVATE KEY-----"
+          ],
+          "certificate": [
+            "-----BEGIN CERTIFICATE-----\nMIICsDCCAZgCCQDjQQTPjaYWmDANBgkqhkiG9w0BAQsFADAaMRgwFgYDVQQDDA9X\nYWxsZXQtS2V5Y2xvYWswHhcNMjUxMTIwMTI0OTI2WhcNMzUxMTE4MTI0OTI2WjAa\nMRgwFgYDVQQDDA9XYWxsZXQtS2V5Y2xvYWswggEiMA0GCSqGSIb3DQEBAQUAA4IB\nDwAwggEKAoIBAQDGv16dc77qT8aj5espoY2/Gsa8nYNyfvbwddaFoNzbYVcC2FpE\nPqXTlsdBsHUAngsz0a8Eb8H1g/7K5pXWsNkuYl2MQOIzdZZ9ll16WdpK8tNcUqJm\n9zxmGQq22sIYitOWg/CBEUL0SAzijnk5gr8hNM1IchEx4I13IxN8dAYIP1JRp99a\n78GAmO0d0pCzr/cMXHKLsQwbvqc40YmxU1Gc9AUEmaECnUyV1RjoLjkvcw8JeW6q\nxR+S6tGanMJnGZC+m6RdPMViC5CT5C5cKtzM0gUHYDgwAXpJuOu4n28vCWYgqDPP\nSrdQcX+cW+aY7ztBtPnnpD0SBtyZfoqcBm3zAgMBAAEwDQYJKoZIhvcNAQELBQAD\nggEBAItlQ1/czOf7nxoDSoaUTtvt+XMWP6ds8B8IYlPMx8X0vxCH6ivdPuLAPEHp\nq9HJSaZ6hmJlr44ynjPvaVfPqUH1FfvvsZRbUBg7OeVk9aysaUftcw85yRd/AWgo\n3t0D+hJ7IKIetE6rk2PJ90jfdu/hxrHmPS59cMTUyy7SnKH+NOzH/8bCYLVJKSG0\n3FKlzPeZ27N120ubmTT86eYeQMF/fCdnJEpKcLEcwQn+2asxE7gnoYLk17dHThUa\n+VlUyuIcVG802zN2XteN40vNpYYigvPk04lpmeyx8rL9BgI2JBOK5kXbZJizkyMz\nmbgL+vA5sXE4I6rDd5gzEsWPPA8=\n-----END CERTIFICATE-----"
+          ],
+          "kid": [
+            "pid-binding-enc"
+          ]
+        }
+      }
+    ]
+  }
+}

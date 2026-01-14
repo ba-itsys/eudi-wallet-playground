@@ -1,29 +1,38 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.common.mdoc;
 
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.node.ObjectNode;
-import com.nimbusds.jose.JOSEObjectType;
 import com.nimbusds.jose.JWSAlgorithm;
-import com.nimbusds.jose.JWSHeader;
-import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.jwk.Curve;
 import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
-import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
-import de.arbeitsagentur.keycloak.wallet.common.mdoc.CredentialBuildResult;
-import de.arbeitsagentur.keycloak.wallet.common.mdoc.TrustedIssuerResolver;
+import de.arbeitsagentur.keycloak.wallet.common.credential.CredentialBuildResult;
+import de.arbeitsagentur.keycloak.wallet.common.credential.TrustedIssuerResolver;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import java.security.PublicKey;
 import java.time.Duration;
-import java.time.Instant;
 import java.util.Collections;
-import java.util.Date;
 import java.util.List;
 import java.util.Map;
-import java.util.function.Supplier;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -53,10 +62,11 @@ class MdocVerifierTest {
     }
 
     @Test
-    void verifiesMdocWithKeyBinding() throws Exception {
+    void verifiesMdocWithDeviceAuthAndSessionTranscript() throws Exception {
         ECKey holderKey = new ECKeyGenerator(Curve.P_256)
                 .algorithm(JWSAlgorithm.ES256)
                 .keyID("wallet-es256")
+                .keyUse(KeyUse.SIGNATURE)
                 .generate();
         ObjectNode cnf = objectMapper.createObjectNode();
         cnf.set("jwk", objectMapper.readTree(holderKey.toPublicJWK().toJSONString()));
@@ -64,35 +74,34 @@ class MdocVerifierTest {
         MdocCredentialBuilder builder = new MdocCredentialBuilder(issuerKey, Duration.ofMinutes(5));
         CredentialBuildResult result = builder.build("cfg-id", "urn:example:pid:mock", "https://issuer.example/mock",
                 Map.of("given_name", "Alice"), cnf);
-        String hex = result.encoded();
+        String issuerSigned = result.encoded();
 
-        String keyBindingJwt = buildKeyBinding(holderKey, hex, "aud-123", "nonce-123");
+        ECKey handoverJwk = new ECKeyGenerator(Curve.P_256)
+                .keyUse(KeyUse.ENCRYPTION)
+                .keyID("verifier-enc")
+                .generate();
+        String expectedClientId = "aud-123";
+        String expectedNonce = "nonce-123";
+        String expectedResponseUri = "https://verifier.example/callback";
+        String deviceResponse = new MdocDeviceResponseBuilder().buildDeviceResponse(
+                issuerSigned,
+                holderKey,
+                expectedClientId,
+                expectedNonce,
+                expectedResponseUri,
+                handoverJwk.toPublicJWK()
+        );
 
         MdocVerifier verifier = new MdocVerifier(resolver);
-        Map<String, Object> claims = verifier.verify(hex, "trust-list-mock", keyBindingJwt, "aud-123", "nonce-123", null);
+        Map<String, Object> claims = verifier.verify(deviceResponse,
+                "trust-list-mock",
+                expectedClientId,
+                expectedNonce,
+                expectedResponseUri,
+                handoverJwk.toPublicJWK().computeThumbprint().decode(),
+                null);
 
         assertThat(claims).containsEntry("given_name", "Alice");
-        assertThat(claims).containsEntry("key_binding_jwt", keyBindingJwt);
         assertThat(claims).containsEntry("docType", "urn:example:pid:mock");
-    }
-
-    private String buildKeyBinding(ECKey holderKey, String vpToken, String audience, String nonce) throws Exception {
-        JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.ES256)
-                .type(new JOSEObjectType("kb+jwt"))
-                .keyID(holderKey.getKeyID())
-                .build();
-        JWTClaimsSet.Builder claims = new JWTClaimsSet.Builder()
-                .issuer("did:example:wallet")
-                .claim("vp_token", vpToken)
-                .issueTime(new Date())
-                .expirationTime(Date.from(Instant.now().plusSeconds(300)))
-                .claim("nonce", nonce)
-                .claim("cnf", Map.of("jwk", holderKey.toPublicJWK().toJSONObject()));
-        if (audience != null) {
-            claims.audience(audience);
-        }
-        SignedJWT jwt = new SignedJWT(header, claims.build());
-        jwt.sign(new ECDSASigner(holderKey));
-        return jwt.serialize();
     }
 }

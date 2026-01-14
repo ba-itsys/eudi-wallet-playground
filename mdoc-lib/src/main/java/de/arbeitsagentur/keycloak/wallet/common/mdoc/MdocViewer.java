@@ -1,3 +1,18 @@
+/*
+ * Copyright 2026 Bundesagentur für Arbeit
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package de.arbeitsagentur.keycloak.wallet.common.mdoc;
 
 import tools.jackson.databind.JsonNode;
@@ -25,7 +40,7 @@ public class MdocViewer {
         if (tokens == null || tokens.isEmpty()) {
             return false;
         }
-        return tokens.stream().anyMatch(token -> extractMdocHex(token, decryptor) != null);
+        return tokens.stream().anyMatch(token -> extractMdocToken(token, decryptor) != null);
     }
 
     public List<String> views(List<String> tokens, Function<String, String> decryptor) {
@@ -34,13 +49,13 @@ public class MdocViewer {
         }
         List<String> views = new ArrayList<>();
         for (String token : tokens) {
-            String hex = extractMdocHex(token, decryptor);
-            if (hex == null) {
+            String mdocToken = extractMdocToken(token, decryptor);
+            if (mdocToken == null) {
                 continue;
             }
-            String pretty = parser.prettyPrint(hex);
+            String pretty = parser.prettyPrint(mdocToken);
             if (pretty == null || pretty.isBlank()) {
-                String sample = hex.length() > 80 ? hex.substring(0, 80) + "..." : hex;
+                String sample = mdocToken.length() > 80 ? mdocToken.substring(0, 80) + "..." : mdocToken;
                 pretty = "{ \"error\": \"Unable to decode mDoc locally\", \"sample\": \"" + sample + "\" }";
             }
             views.add(pretty);
@@ -48,42 +63,32 @@ public class MdocViewer {
         return views.isEmpty() ? Collections.emptyList() : views;
     }
 
-    String extractMdocHex(String token, Function<String, String> decryptor) {
+    String extractMdocToken(String token, Function<String, String> decryptor) {
         if (token == null || token.isBlank()) {
             return null;
         }
         String decrypted = decryptor != null ? decryptor.apply(token) : token;
-        if (isMdocToken(decrypted)) {
+        if (parser.isMdoc(decrypted)) {
             return decrypted;
         }
         String embedded = extractEmbeddedVpToken(decrypted);
-        if (isMdocToken(embedded)) {
+        if (parser.isMdoc(embedded)) {
             return embedded;
         }
         try {
             JsonNode node = objectMapper.readTree(decrypted);
             if (node.isArray() && node.size() > 0 && node.get(0).isTextual()) {
                 String candidate = node.get(0).asText();
-                if (isMdocToken(candidate)) {
+                if (parser.isMdoc(candidate)) {
                     return candidate;
                 }
             }
-            if (node.isTextual() && isMdocToken(node.asText())) {
+            if (node.isTextual() && parser.isMdoc(node.asText())) {
                 return node.asText();
             }
         } catch (Exception ignored) {
         }
         return null;
-    }
-
-    private boolean isMdocToken(String token) {
-        if (token == null || token.isBlank()) {
-            return false;
-        }
-        if (token.contains(".") || token.contains("~")) {
-            return false;
-        }
-        return token.matches("^[0-9a-fA-F]{8,}$");
     }
 
     private String extractEmbeddedVpToken(String token) {

@@ -1,0 +1,87 @@
+:root {
+  --flow-border: rgba(148, 163, 184, 0.35);
+}
+
+.flow-graph {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+  overflow: auto;
+  padding: 0.5rem;
+  border: 1px solid var(--flow-border);
+  border-radius: 10px;
+  background: #fff;
+  min-height: 62px;
+}
+
+.flow-node {
+  appearance: none;
+  border: 1px solid var(--flow-border);
+  background: #f8fafc;
+  border-radius: 12px;
+  padding: 0.45rem 0.55rem;
+  min-width: 210px;
+  max-width: 280px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.flow-node:hover {
+  border-color: rgba(56, 189, 248, 0.55);
+}
+
+.flow-node.active {
+  border-color: rgba(56, 189, 248, 0.8);
+  box-shadow: 0 6px 18px rgba(56, 189, 248, 0.12);
+}
+
+.flow-title {
+  font-weight: 700;
+  color: #0f172a;
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.flow-dir {
+  margin-top: 0.15rem;
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.flow-req,
+.flow-res {
+  margin-top: 0.2rem;
+  color: #475569;
+  font-size: 0.75rem;
+  line-height: 1.25;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.flow-res strong {
+  color: #0f172a;
+}
+
+.flow-meta {
+  margin-top: 0.15rem;
+  color: #64748b;
+  font-size: 0.75rem;
+}
+
+.flow-connector {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  padding: 0 0.15rem;
+  user-select: none;
+}
+
+.flow-details {
+  margin-top: 0.5rem;
+  border: 1px solid var(--flow-border);
+  border-radius: 10px;
+  padding: 0.65rem;
+  background: #fff;
+}
