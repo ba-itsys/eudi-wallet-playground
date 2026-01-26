@@ -66,6 +66,11 @@ spec:
             - name: realm-import
               mountPath: /opt/keycloak/data/import/realm-export.json
               subPath: realm-export.json
+            {{- if .Values.keycloak.realmPidBindingJson }}
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import/realm-pid-binding-export.json
+              subPath: realm-pid-binding-export.json
+            {{- end }}
       volumes:
         - name: keycloak-data
           emptyDir: {}

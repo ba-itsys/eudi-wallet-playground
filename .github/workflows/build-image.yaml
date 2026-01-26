@@ -27,13 +27,24 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: 'Build and push image'
+      - name: 'Extract version from pom.xml'
+        id: version
+        run: echo "version=$(mvn help:evaluate -Dexpression=project.version -q -DforceStdout)" >> $GITHUB_OUTPUT
+
+      - name: 'Build and push wallet image'
         run: >
           mvn
           --batch-mode
           -pl demo-app
           -am
-          -Dspring-boot.build-image.imageName=ghcr.io/${{ github.repository }}:\${project.version}
+          -Dspring-boot.build-image.imageName=ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
           -Dspring-boot.build-image.publish=true
           -DskipTests
           package spring-boot:build-image
+
+      - name: 'Build and push Keycloak image'
+        uses: docker/build-push-action@v6
+        with:
+          context: keycloak-oid4vp
+          push: true
+          tags: ghcr.io/${{ github.repository }}-keycloak:${{ steps.version.outputs.version }}

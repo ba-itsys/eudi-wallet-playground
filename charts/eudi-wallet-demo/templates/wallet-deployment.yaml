@@ -99,11 +99,11 @@ spec:
               value: {{ .Values.wallet.env.maxHttpResponseHeaderSize }}
             - name: VERIFIER_MAX_REQUEST_OBJECT_INLINE_BYTES
               value: {{ .Values.wallet.env.verifierMaxRequestObjectInlineBytes | quote }}
-            {{- if .Values.wallet.conformance.baseUrl }}
+            {{- if and .Values.wallet.conformance .Values.wallet.conformance.baseUrl }}
             - name: VERIFIER_CONFORMANCE_BASE_URL
               value: {{ .Values.wallet.conformance.baseUrl | quote }}
             {{- end }}
-            {{- if .Values.wallet.conformance.apiKey }}
+            {{- if and .Values.wallet.conformance .Values.wallet.conformance.apiKey }}
             - name: VERIFIER_CONFORMANCE_API_KEY
               valueFrom:
                 secretKeyRef:
