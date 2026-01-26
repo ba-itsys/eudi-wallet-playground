@@ -22,9 +22,24 @@ These values are exposed to the container as `VERIFIER_CONFORMANCE_BASE_URL` and
 
 You can also enter/override the suite base URL and API key directly in `/verifier/conformance` (stored in the HTTP session), which is useful if you do not want to persist the API key as a Kubernetes secret.
 
-## Build/push the wallet image
+## Images
+
+Both images are built and pushed automatically by CI on tagged releases:
+- **Wallet**: `ghcr.io/ba-itsys/eudi-wallet-keycloak-demo:<version>`
+- **Keycloak** (with oid4vp provider): `ghcr.io/ba-itsys/eudi-wallet-keycloak-demo-keycloak:<version>`
+
+### Manual build
+
+**Wallet image:**
 ```
-mvn spring-boot:build-image -Dspring-boot.build-image.imageName=<repo>:<tag>
+mvn spring-boot:build-image -pl demo-app -am -Dspring-boot.build-image.imageName=<repo>:<tag> -DskipTests
+docker push <repo>:<tag>
+```
+
+**Keycloak image:**
+```
+mvn package -pl keycloak-oid4vp -am -DskipTests
+docker build -t <repo>:<tag> keycloak-oid4vp
 docker push <repo>:<tag>
 ```
 
@@ -34,13 +49,22 @@ helm upgrade --install wallet-demo charts/eudi-wallet-demo \
   --set keycloak.publicHost=<public-host> \
   --set wallet.publicBaseUrl=<https-url-to-wallet> \
   --set wallet.keycloakBaseUrl=<https-url-to-keycloak> \
-  --set wallet.image.repository=<wallet-image-repo> \
-  --set wallet.image.tag=<wallet-image-tag> \
-  --set keycloak.image.repository=<keycloak-image-repo> \
-  --set keycloak.image.tag=<keycloak-image-tag> \
+  --set wallet.image.repository=ghcr.io/ba-itsys/eudi-wallet-keycloak-demo \
+  --set wallet.image.tag=<version> \
+  --set keycloak.image.repository=ghcr.io/ba-itsys/eudi-wallet-keycloak-demo-keycloak \
+  --set keycloak.image.tag=<version> \
   --set-file keycloak.realmJson=demo-app/config/keycloak/realm-export.json \
+  --set-file keycloak.realmPidBindingJson=demo-app/config/keycloak/realm-pid-binding-export.json \
   --set-file wallet.files.walletKeys=demo-app/config/wallet-keys.json \
   --set-file wallet.files.verifierKeys=demo-app/config/verifier-keys.json \
   --set-file wallet.files.mockIssuerKeys=demo-app/config/mock-issuer-keys.json \
   --set-file wallet.files.mockIssuerConfigurations=demo-app/config/mock-issuer-configurations.json
 ```
+
+## Keycloak realm files
+
+The chart supports importing multiple Keycloak realm files:
+- `keycloak.realmJson` (required) - Main realm export (e.g., `realm-export.json`)
+- `keycloak.realmPidBindingJson` (optional) - Additional realm for PID binding (e.g., `realm-pid-binding-export.json`)
+
+Both files are mounted to `/opt/keycloak/data/import/` and imported on Keycloak startup via `--import-realm`.
