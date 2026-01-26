@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.5.0...v1.5.1) (2026-01-26)
+
+
+### Bug Fixes
+
+* add keycloak image with custom provider, update helm ([dacd34f](https://github.com/ba-itsys/eudi-wallet-playground/commit/dacd34f0a2f81b94cba0811b983d5873150e90a8))
+
 ## [1.5.0](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.4.0...v1.5.0) (2026-01-20)
 
 
