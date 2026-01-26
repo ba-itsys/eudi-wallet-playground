@@ -16,13 +16,12 @@
 package de.arbeitsagentur.keycloak.oid4vp.idp;
 
 /**
- * Holds the session state for an OID4VP login request.
- * Used to pass data between helper methods during performLogin.
+ * Holds redirect flow data (same-device/cross-device wallet URLs and QR code).
  */
-record Oid4vpSessionState(
-        String state,
-        String nonce,
-        String clientId,
-        String formActionUrl,
-        String redirectUri
-) {}
+record RedirectFlowData(
+        String sameDeviceWalletUrl,
+        String crossDeviceWalletUrl,
+        String qrCodeBase64
+) {
+    static final RedirectFlowData EMPTY = new RedirectFlowData(null, null, null);
+}
