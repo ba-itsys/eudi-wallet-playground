@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.3](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.5.2...v1.5.3) (2026-01-30)
+
+
+### Bug Fixes
+
+* fix some issues with AWS deployed version ([9bab06b](https://github.com/ba-itsys/eudi-wallet-playground/commit/9bab06b4f7e6dd7734e05f1d52d03146a6b23400))
+
 ## [1.5.2](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.5.1...v1.5.2) (2026-01-26)
 
 
