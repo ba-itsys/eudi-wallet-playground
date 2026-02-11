@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.6.0](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.5.3...v1.6.0) (2026-02-11)
+
+
+### Features
+
+* use ETSI trust list format and ability to load them from URL ([ad22a85](https://github.com/ba-itsys/eudi-wallet-playground/commit/ad22a853fdd1986030cc4e2a3a8564d9c012504a))
+
+
+### Bug Fixes
+
+* add localtest.me to /etc/hosts in ci for testing ([6feca1a](https://github.com/ba-itsys/eudi-wallet-playground/commit/6feca1a528254d518485df0ec1acfe71494e7a3e))
+
 ## [1.5.3](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.5.2...v1.5.3) (2026-01-30)
 
 
