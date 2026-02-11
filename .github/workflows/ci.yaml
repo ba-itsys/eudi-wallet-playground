@@ -12,5 +12,8 @@ jobs:
           java-version: '21'
           cache: 'maven'
 
+      - name: Add localtest.me to /etc/hosts
+        run: echo "127.0.0.1 verifier.localtest.me" | sudo tee -a /etc/hosts
+
       - name: Build and test
         run: mvn --batch-mode verify
