@@ -21,8 +21,8 @@ import com.nimbusds.jose.JWEAlgorithm;
 import com.nimbusds.jose.JWEHeader;
 import com.nimbusds.jose.JWEObject;
 import com.nimbusds.jose.Payload;
-import com.nimbusds.jose.crypto.RSAEncrypter;
-import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jose.crypto.ECDHEncrypter;
+import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jwt.SignedJWT;
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
 import org.junit.jupiter.api.BeforeEach;
@@ -542,14 +542,14 @@ class HaipComplianceTest {
             // OID4VP 1.0 DCQL response format: just vp_token (no presentation_submission)
             String vpTokenPayload = "{\"vp_token\": \"eyJ0eXAiOiJkYytzZC1qd3QiLCJhbGciOiJFUzI1NiJ9.test~disclosure1~kb-jwt\"}";
 
-            RSAKey encryptionKey = verifierKeyService.loadOrCreateEncryptionKey();
+            ECKey encryptionKey = verifierKeyService.loadOrCreateEncryptionKey();
 
-            JWEHeader header = new JWEHeader.Builder(JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A128GCM)
+            JWEHeader header = new JWEHeader.Builder(JWEAlgorithm.ECDH_ES, EncryptionMethod.A128GCM)
                     .keyID(encryptionKey.getKeyID())
                     .build();
 
             JWEObject jwe = new JWEObject(header, new Payload(vpTokenPayload));
-            jwe.encrypt(new RSAEncrypter(encryptionKey.toRSAPublicKey()));
+            jwe.encrypt(new ECDHEncrypter(encryptionKey.toECPublicKey()));
             String encryptedResponse = jwe.serialize();
 
             String decrypted = verifierKeyService.decrypt(encryptedResponse);
@@ -567,14 +567,14 @@ class HaipComplianceTest {
             // OID4VP 1.0 DCQL response format
             String vpTokenPayload = "{\"vp_token\": \"eyJ0eXAiOiJkYytzZC1qd3QiLCJhbGciOiJFUzI1NiJ9.test~disclosure1~kb-jwt\"}";
 
-            RSAKey encryptionKey = verifierKeyService.loadOrCreateEncryptionKey();
+            ECKey encryptionKey = verifierKeyService.loadOrCreateEncryptionKey();
 
-            JWEHeader header = new JWEHeader.Builder(JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A256GCM)
+            JWEHeader header = new JWEHeader.Builder(JWEAlgorithm.ECDH_ES, EncryptionMethod.A256GCM)
                     .keyID(encryptionKey.getKeyID())
                     .build();
 
             JWEObject jwe = new JWEObject(header, new Payload(vpTokenPayload));
-            jwe.encrypt(new RSAEncrypter(encryptionKey.toRSAPublicKey()));
+            jwe.encrypt(new ECDHEncrypter(encryptionKey.toECPublicKey()));
             String encryptedResponse = jwe.serialize();
 
             String decrypted = verifierKeyService.decrypt(encryptedResponse);
@@ -590,14 +590,14 @@ class HaipComplianceTest {
         void mustDecryptWithHaipEncryptionMethods(EncryptionMethod encMethod) throws Exception {
             String vpTokenPayload = "{\"vp_token\": \"test-" + encMethod.getName() + "\"}";
 
-            RSAKey encryptionKey = verifierKeyService.loadOrCreateEncryptionKey();
+            ECKey encryptionKey = verifierKeyService.loadOrCreateEncryptionKey();
 
-            JWEHeader header = new JWEHeader.Builder(JWEAlgorithm.RSA_OAEP_256, encMethod)
+            JWEHeader header = new JWEHeader.Builder(JWEAlgorithm.ECDH_ES, encMethod)
                     .keyID(encryptionKey.getKeyID())
                     .build();
 
             JWEObject jwe = new JWEObject(header, new Payload(vpTokenPayload));
-            jwe.encrypt(new RSAEncrypter(encryptionKey.toRSAPublicKey()));
+            jwe.encrypt(new ECDHEncrypter(encryptionKey.toECPublicKey()));
             String encryptedResponse = jwe.serialize();
 
             String decrypted = verifierKeyService.decrypt(encryptedResponse);
@@ -609,9 +609,7 @@ class HaipComplianceTest {
         @Test
         @DisplayName("Verifiers MUST supply ephemeral encryption public keys per request [5-2.6]")
         void mustUseEphemeralEncryptionKeys() throws Exception {
-            // Each request should have its own encryption key
-            // This is verified by checking that keys can be generated
-            RSAKey key1 = verifierKeyService.loadOrCreateEncryptionKey();
+            ECKey key1 = verifierKeyService.loadOrCreateEncryptionKey();
             assertThat(key1)
                     .as("Verifier must be able to create encryption keys for each request")
                     .isNotNull();
@@ -640,6 +638,27 @@ class HaipComplianceTest {
             assertThat(jwksNode.get("keys").size())
                     .as("JWKS must contain encryption keys")
                     .isGreaterThan(0);
+        }
+
+        @Test
+        @DisplayName("JWKS encryption key MUST be EC P-256 matching ECDH-ES [5-2.5]")
+        void jwksKeyMustBeEcP256() throws Exception {
+            String jwks = verifierKeyService.publicJwksJson();
+            JsonNode jwksNode = objectMapper.readTree(jwks);
+            JsonNode key = jwksNode.get("keys").get(0);
+
+            assertThat(key.get("kty").asText())
+                    .as("HAIP 5-2.5: ECDH-ES requires EC key type")
+                    .isEqualTo("EC");
+            assertThat(key.get("crv").asText())
+                    .as("HAIP 5-2.5: ECDH-ES with P-256 curve")
+                    .isEqualTo("P-256");
+            assertThat(key.get("use").asText())
+                    .as("Encryption key must have use=enc")
+                    .isEqualTo("enc");
+            assertThat(key.has("d"))
+                    .as("Public JWKS must not contain private key material")
+                    .isFalse();
         }
 
         @Test

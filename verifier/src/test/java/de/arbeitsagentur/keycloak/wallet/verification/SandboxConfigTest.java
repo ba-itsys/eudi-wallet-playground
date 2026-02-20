@@ -15,6 +15,8 @@
  */
 package de.arbeitsagentur.keycloak.wallet.verification;
 
+import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.jwk.JWKSet;
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerifierCryptoService;
 import de.arbeitsagentur.keycloak.wallet.verification.service.VerifierKeyService;
@@ -31,6 +33,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import tools.jackson.databind.JsonNode;
 import tools.jackson.databind.ObjectMapper;
 
 import java.math.BigInteger;
@@ -38,10 +41,17 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.KeyPair;
 import java.security.KeyPairGenerator;
+import java.security.cert.CertPathValidator;
+import java.security.cert.CertificateFactory;
+import java.security.cert.PKIXParameters;
+import java.security.cert.TrustAnchor;
 import java.security.cert.X509Certificate;
 import java.security.spec.ECGenParameterSpec;
+import java.io.ByteArrayInputStream;
 import java.util.Base64;
 import java.util.Date;
+import java.util.List;
+import java.util.Set;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -296,6 +306,147 @@ class SandboxConfigTest {
         // The stripped version should still have both certs in the chain
         var chain = cryptoService.extractCertChain(stripped);
         assertThat(chain).hasSize(2);
+    }
+
+    @Test
+    void sandboxCertChainIsValidatable() throws Exception {
+        var props = new VerifierProperties(null, null, null, null, null, null, null,
+                certFile.toString(), null, null, null);
+        var keyService = new VerifierKeyService(props, new ObjectMapper());
+        var cryptoService = new VerifierCryptoService(keyService, props);
+
+        var material = cryptoService.loadSandboxMaterial();
+        var chain = cryptoService.extractCertChain(material.combinedPem());
+        assertThat(chain).as("Chain must include leaf + intermediate CA").hasSize(2);
+
+        // Parse the certificates and validate the chain
+        CertificateFactory cf = CertificateFactory.getInstance("X.509");
+        X509Certificate leaf = (X509Certificate) cf.generateCertificate(
+                new ByteArrayInputStream(Base64.getDecoder().decode(chain.get(0))));
+        X509Certificate intermediate = (X509Certificate) cf.generateCertificate(
+                new ByteArrayInputStream(Base64.getDecoder().decode(chain.get(1))));
+
+        // Leaf must be signed by the intermediate CA
+        leaf.verify(intermediate.getPublicKey());
+
+        // Intermediate must be a CA
+        assertThat(intermediate.getBasicConstraints())
+                .as("Intermediate certificate must be a CA")
+                .isGreaterThanOrEqualTo(0);
+
+        // Leaf must NOT be a CA
+        assertThat(leaf.getBasicConstraints())
+                .as("Leaf certificate must not be a CA")
+                .isEqualTo(-1);
+
+        // Leaf issuer must match intermediate subject
+        assertThat(leaf.getIssuerX500Principal())
+                .as("Leaf issuer must match intermediate subject")
+                .isEqualTo(intermediate.getSubjectX500Principal());
+    }
+
+    @Test
+    void encryptionKeyIsEcP256WithEcdhEs() throws Exception {
+        var props = new VerifierProperties(null, null, null, null, null, null, null,
+                null, null, null, null);
+        var keyService = new VerifierKeyService(props, new ObjectMapper());
+
+        ECKey encKey = keyService.loadOrCreateEncryptionKey();
+        assertThat(encKey.getCurve().getName()).isEqualTo("P-256");
+        assertThat(encKey.getAlgorithm().getName()).isEqualTo("ECDH-ES");
+        assertThat(encKey.getKeyUse().getValue()).isEqualTo("enc");
+        assertThat(encKey.isPrivate()).isTrue();
+    }
+
+    @Test
+    void publicJwksContainsEcEncryptionKey() throws Exception {
+        var props = new VerifierProperties(null, null, null, null, null, null, null,
+                null, null, null, null);
+        var keyService = new VerifierKeyService(props, new ObjectMapper());
+
+        String jwksJson = keyService.publicJwksJson();
+        JWKSet jwkSet = JWKSet.parse(jwksJson);
+
+        assertThat(jwkSet.getKeys()).hasSize(1);
+        assertThat(jwkSet.getKeys().get(0)).isInstanceOf(ECKey.class);
+
+        ECKey publicKey = (ECKey) jwkSet.getKeys().get(0);
+        assertThat(publicKey.getCurve().getName()).isEqualTo("P-256");
+        assertThat(publicKey.getAlgorithm().getName()).isEqualTo("ECDH-ES");
+        assertThat(publicKey.isPrivate()).as("Public JWKS must not expose private key").isFalse();
+    }
+
+    @Test
+    void clientMetadataEncryptionAlgMatchesJwksKeyType() throws Exception {
+        var props = new VerifierProperties(null, null, null, null, null, null, null,
+                null, null, null, null);
+        var keyService = new VerifierKeyService(props, new ObjectMapper());
+        ObjectMapper mapper = new ObjectMapper();
+
+        // Build the same client_metadata as VerifierController.defaultClientMetadata()
+        String jwks = keyService.publicJwksJson();
+        JsonNode jwksNode = mapper.readTree(jwks);
+        var meta = mapper.createObjectNode();
+        meta.set("jwks", jwksNode);
+        meta.put("authorization_encrypted_response_alg", "ECDH-ES");
+        meta.put("authorization_encrypted_response_enc", "A128GCM");
+
+        // Verify the JWKS key type is compatible with the advertised algorithm
+        JsonNode keys = meta.get("jwks").get("keys");
+        assertThat(keys.isArray()).isTrue();
+        assertThat(keys.size()).isGreaterThan(0);
+
+        String kty = keys.get(0).get("kty").asText();
+        String alg = meta.get("authorization_encrypted_response_alg").asText();
+
+        // ECDH-ES requires EC keys, not RSA
+        assertThat(kty).as("ECDH-ES requires EC key type, not RSA").isEqualTo("EC");
+        assertThat(alg).startsWith("ECDH");
+    }
+
+    @Test
+    void ecdhEsEncryptDecryptRoundTrip() {
+        var props = new VerifierProperties(null, null, null, null, null, null, null,
+                null, null, null, null);
+        var keyService = new VerifierKeyService(props, new ObjectMapper());
+
+        String payload = "{\"vp_token\":\"test-token-value\"}";
+        String encrypted = keyService.encrypt(payload, "ECDH-ES", "A128GCM");
+
+        assertThat(encrypted).isNotEqualTo(payload);
+        assertThat(encrypted).contains("."); // JWE compact serialization
+
+        String decrypted = keyService.decrypt(encrypted);
+        assertThat(decrypted).isEqualTo(payload);
+    }
+
+    @Test
+    void legacyRsaEncryptionKeyIsReplacedWithEc() throws Exception {
+        // Create a key service without a keys file to get a fresh RSA signing key
+        var rsaKeyService = new VerifierKeyService(
+                new VerifierProperties(null, null, null, null, null, null, null, null, null, null, null),
+                new ObjectMapper());
+        var signingKey = rsaKeyService.loadOrCreateSigningKey();
+
+        // Write a legacy keys file with only the RSA signing key (no encryption key)
+        Path legacyFile = tempDir.resolve("legacy-rsa-keys.json");
+        String legacyJson = "{\"keys\":[" + signingKey.toJSONString() + "]}";
+        Files.writeString(legacyFile, legacyJson);
+
+        // Load from the legacy file — should generate a new EC encryption key
+        var props2 = new VerifierProperties(null, null, null, null, legacyFile, null, null,
+                null, null, null, null);
+        var keyService2 = new VerifierKeyService(props2, new ObjectMapper());
+
+        ECKey encKey = keyService2.loadOrCreateEncryptionKey();
+        assertThat(encKey).as("Missing RSA encryption key should be regenerated as EC").isNotNull();
+        assertThat(encKey.getCurve().getName()).isEqualTo("P-256");
+        assertThat(encKey.getAlgorithm().getName()).isEqualTo("ECDH-ES");
+
+        // Verify the persisted file now contains the EC key
+        String persisted = Files.readString(legacyFile);
+        assertThat(persisted).contains("\"EC\"");
+        assertThat(persisted).contains("ECDH-ES");
     }
 
     private static String toPem(byte[] der, String type) {

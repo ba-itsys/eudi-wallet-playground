@@ -19,8 +19,8 @@ import tools.jackson.databind.ObjectMapper;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.MACSigner;
-import com.nimbusds.jose.crypto.RSAEncrypter;
-import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jose.crypto.ECDHEncrypter;
+import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.JWEAlgorithm;
 import com.nimbusds.jose.EncryptionMethod;
 import com.nimbusds.jose.JWEHeader;
@@ -161,14 +161,14 @@ class PresentationVerificationServiceTest {
     @Test
     void decryptsEncryptedVpToken() throws Exception {
         String token = buildJwt("nonce-enc", "wallet-verifier", Instant.now().plusSeconds(60), null);
-        RSAKey rsaKey = verifierKeyService.loadOrCreateEncryptionKey();
+        ECKey ecKey = verifierKeyService.loadOrCreateEncryptionKey();
         JWEObject jwe = new JWEObject(
-                new JWEHeader.Builder(JWEAlgorithm.RSA_OAEP_256, EncryptionMethod.A256GCM)
-                        .keyID(rsaKey.getKeyID())
+                new JWEHeader.Builder(JWEAlgorithm.ECDH_ES, EncryptionMethod.A128GCM)
+                        .keyID(ecKey.getKeyID())
                         .build(),
                 new Payload(token)
         );
-        jwe.encrypt(new RSAEncrypter(rsaKey.toRSAPublicKey()));
+        jwe.encrypt(new ECDHEncrypter(ecKey.toECPublicKey()));
 
         Map<String, Object> claims = verificationService.verifySinglePresentation(
                 jwe.serialize(),
