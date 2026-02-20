@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.1](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.7.0...v1.7.1) (2026-02-20)
+
+
+### Bug Fixes
+
+* sandbox issues fixed ([1d29f1b](https://github.com/ba-itsys/eudi-wallet-playground/commit/1d29f1b3331ca2676fa58e32ab6a6fbbfb16cf89))
+
 ## [1.7.0](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.6.0...v1.7.0) (2026-02-19)
 
 
