@@ -245,13 +245,13 @@ public class VerifierController {
         defaults.put("clientMetadata", defaultClientMetadata());
         defaults.put("verifierInfo", verifierInfo);
         // Build three DCQL variants matching the registration certificate claims.
-        // SD-JWT omits birth_date (known issue with some wallets).
+        // SD-JWT: "address" is a single selective disclosure in the PID — request the whole object.
         String sdJwtOnly = """
-                {"credentials":[{"id":"pid_sd_jwt","format":"dc+sd-jwt","meta":{"vct_values":["urn:eudi:pid:de:1"]},"claims":[{"path":["given_name"]},{"path":["family_name"]},{"path":["address","street_address"]},{"path":["address","locality"]}]}]}""";
+                {"credentials":[{"id":"pid_sd_jwt","format":"dc+sd-jwt","meta":{"vct_values":["urn:eudi:pid:de:1"]},"claims":[{"path":["given_name"]},{"path":["family_name"]},{"path":["address"]},{"path":["birth_date"]}]}]}""";
         String mdocOnly = """
-                {"credentials":[{"id":"pid_mdoc","format":"mso_mdoc","meta":{"doctype_value":"eu.europa.ec.eudi.pid.1"},"claims":[{"path":["eu.europa.ec.eudi.pid.1","given_name"]},{"path":["eu.europa.ec.eudi.pid.1","family_name"]},{"path":["eu.europa.ec.eudi.pid.1","birth_date"]},{"path":["eu.europa.ec.eudi.pid.1","address","street_address"]},{"path":["eu.europa.ec.eudi.pid.1","address","locality"]}]}]}""";
+                {"credentials":[{"id":"pid_mdoc","format":"mso_mdoc","meta":{"doctype_value":"eu.europa.ec.eudi.pid.1"},"claims":[{"path":["eu.europa.ec.eudi.pid.1","given_name"]},{"path":["eu.europa.ec.eudi.pid.1","family_name"]},{"path":["eu.europa.ec.eudi.pid.1","birth_date"]},{"path":["eu.europa.ec.eudi.pid.1","address"]}]}]}""";
         String both = """
-                {"credentials":[{"id":"pid_sd_jwt","format":"dc+sd-jwt","meta":{"vct_values":["urn:eudi:pid:de:1"]},"claims":[{"path":["given_name"]},{"path":["family_name"]},{"path":["address","street_address"]},{"path":["address","locality"]}]},{"id":"pid_mdoc","format":"mso_mdoc","meta":{"doctype_value":"eu.europa.ec.eudi.pid.1"},"claims":[{"path":["eu.europa.ec.eudi.pid.1","given_name"]},{"path":["eu.europa.ec.eudi.pid.1","family_name"]},{"path":["eu.europa.ec.eudi.pid.1","birth_date"]},{"path":["eu.europa.ec.eudi.pid.1","address","street_address"]},{"path":["eu.europa.ec.eudi.pid.1","address","locality"]}]}],"credential_sets":[{"options":[["pid_sd_jwt"],["pid_mdoc"]]}]}""";
+                {"credentials":[{"id":"pid_sd_jwt","format":"dc+sd-jwt","meta":{"vct_values":["urn:eudi:pid:de:1"]},"claims":[{"path":["given_name"]},{"path":["family_name"]},{"path":["address"]},{"path":["birth_date"]}]},{"id":"pid_mdoc","format":"mso_mdoc","meta":{"doctype_value":"eu.europa.ec.eudi.pid.1"},"claims":[{"path":["eu.europa.ec.eudi.pid.1","given_name"]},{"path":["eu.europa.ec.eudi.pid.1","family_name"]},{"path":["eu.europa.ec.eudi.pid.1","birth_date"]},{"path":["eu.europa.ec.eudi.pid.1","address"]}]}],"credential_sets":[{"options":[["pid_sd_jwt"],["pid_mdoc"]]}]}""";
         // Allow env override via sandboxDcqlQuery for backward compat
         String dcqlOverride = properties.sandboxDcqlQuery();
         defaults.put("dcqlSdJwt", pretty(sdJwtOnly));
@@ -906,8 +906,8 @@ public class VerifierController {
             // Use ECDH-ES per HAIP Section 5-2.5
             meta.put("authorization_encrypted_response_alg", "ECDH-ES");
             meta.put("authorization_encrypted_response_enc", "A128GCM");
-            // VP formats for OID4VP (not vp_formats_supported)
-            ObjectNode formats = meta.putObject("vp_formats");
+            // VP formats per OID4VP 1.0 Section 11.1
+            ObjectNode formats = meta.putObject("vp_formats_supported");
             ObjectNode sdJwt = objectMapper.createObjectNode();
             sdJwt.putArray("sd-jwt_alg_values").add("ES256");
             sdJwt.putArray("kb-jwt_alg_values").add("ES256");

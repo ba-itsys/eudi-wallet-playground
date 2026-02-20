@@ -1424,9 +1424,8 @@ class PresentationServiceTest {
                       "claims": [
                         { "path": ["given_name"] },
                         { "path": ["family_name"] },
-                        { "path": ["birth_date"] },
-                        { "path": ["address", "street_address"] },
-                        { "path": ["address", "locality"] }
+                        { "path": ["address"] },
+                        { "path": ["birth_date"] }
                       ]
                     },
                     {
@@ -1437,8 +1436,7 @@ class PresentationServiceTest {
                         { "path": ["eu.europa.ec.eudi.pid.1", "given_name"] },
                         { "path": ["eu.europa.ec.eudi.pid.1", "family_name"] },
                         { "path": ["eu.europa.ec.eudi.pid.1", "birth_date"] },
-                        { "path": ["eu.europa.ec.eudi.pid.1", "address", "street_address"] },
-                        { "path": ["eu.europa.ec.eudi.pid.1", "address", "locality"] }
+                        { "path": ["eu.europa.ec.eudi.pid.1", "address"] }
                       ]
                     }
                   ],
@@ -1457,8 +1455,7 @@ class PresentationServiceTest {
 
     @Test
     void sandboxDcqlQueryMatchesMdocPid() throws Exception {
-        // mDoc claims are stored flat (namespace elements) — the mock wallet resolves
-        // 3-element DCQL paths ["ns", "address", "street_address"] by claim name (last segment)
+        // mDoc claims are stored flat (namespace elements) — "address" is a parent object
         saveCredential("user", Map.of(
                 "vct", "eu.europa.ec.eudi.pid.1",
                 "format", "mso_mdoc",
@@ -1466,8 +1463,7 @@ class PresentationServiceTest {
                         "given_name", "Bob",
                         "family_name", "Smith",
                         "birth_date", "1985-06-15",
-                        "street_address", "Elm Ave 42",
-                        "locality", "Munich"
+                        "address", Map.of("street_address", "Elm Ave 42", "locality", "Munich")
                 ),
                 "rawCredential", "mdoc-pid-token"
         ));
@@ -1483,9 +1479,8 @@ class PresentationServiceTest {
                       "claims": [
                         { "path": ["given_name"] },
                         { "path": ["family_name"] },
-                        { "path": ["birth_date"] },
-                        { "path": ["address", "street_address"] },
-                        { "path": ["address", "locality"] }
+                        { "path": ["address"] },
+                        { "path": ["birth_date"] }
                       ]
                     },
                     {
@@ -1496,8 +1491,7 @@ class PresentationServiceTest {
                         { "path": ["eu.europa.ec.eudi.pid.1", "given_name"] },
                         { "path": ["eu.europa.ec.eudi.pid.1", "family_name"] },
                         { "path": ["eu.europa.ec.eudi.pid.1", "birth_date"] },
-                        { "path": ["eu.europa.ec.eudi.pid.1", "address", "street_address"] },
-                        { "path": ["eu.europa.ec.eudi.pid.1", "address", "locality"] }
+                        { "path": ["eu.europa.ec.eudi.pid.1", "address"] }
                       ]
                     }
                   ],
@@ -1511,9 +1505,7 @@ class PresentationServiceTest {
         assertThat(bundle.get().matches().get(0).descriptorId()).isEqualTo("pid_mdoc");
         assertThat(bundle.get().matches().get(0).disclosedClaims())
                 .containsEntry("given_name", "Bob")
-                .containsEntry("family_name", "Smith")
-                .containsEntry("street_address", "Elm Ave 42")
-                .containsEntry("locality", "Munich");
+                .containsEntry("family_name", "Smith");
     }
 
     private void saveCredential(String userId, Map<String, Object> credential) throws Exception {

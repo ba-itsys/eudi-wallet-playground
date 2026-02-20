@@ -9,8 +9,8 @@
       "claims": [
         { "name": "given_name", "label": "Given name", "defaultValue": "Alice", "required": true },
         { "name": "family_name", "label": "Family name", "defaultValue": "Holder", "required": true },
-        { "name": "birthdate", "label": "Birthdate", "defaultValue": "1990-01-01", "required": true },
-        { "name": "address.country", "label": "Country", "defaultValue": "DE", "required": true },
+        { "name": "birth_date", "label": "Birth date", "defaultValue": "1990-01-01", "required": true },
+        { "name": "address", "label": "Address", "defaultValue": "{\"street_address\":\"Heidestraße 17\",\"locality\":\"Berlin\",\"postal_code\":\"10557\",\"country\":\"DE\"}", "required": true },
         { "name": "document_number", "label": "Document number", "defaultValue": "DOC-MOCK-1234", "required": true },
         { "name": "nationalities", "label": "Nationalities", "defaultValue": "[\"DE\"]", "required": false }
       ]
@@ -24,8 +24,8 @@
       "claims": [
         { "name": "given_name", "label": "Given name", "defaultValue": "Alice", "required": true },
         { "name": "family_name", "label": "Family name", "defaultValue": "Holder", "required": true },
-        { "name": "birthdate", "label": "Birthdate", "defaultValue": "1990-01-01", "required": true },
-        { "name": "address.country", "label": "Country", "defaultValue": "DE", "required": true },
+        { "name": "birth_date", "label": "Birth date", "defaultValue": "1990-01-01", "required": true },
+        { "name": "address", "label": "Address", "defaultValue": "{\"street_address\":\"Heidestraße 17\",\"locality\":\"Berlin\",\"postal_code\":\"10557\",\"country\":\"DE\"}", "required": true },
         { "name": "document_number", "label": "Document number", "defaultValue": "DOC-MOCK-1234", "required": true },
         { "name": "nationalities", "label": "Nationalities", "defaultValue": "[\"DE\"]", "required": false }
       ]

@@ -165,7 +165,7 @@ public class DcqlQueryBuilder {
         credential.put("meta", buildMetaConstraint(typeSpec));
 
         if (!typeSpec.claimSpecs().isEmpty()) {
-            addClaimsWithOptionalSets(credential, typeSpec.claimSpecs());
+            addClaimsWithOptionalSets(credential, typeSpec.claimSpecs(), typeSpec.format(), typeSpec.type());
         }
         return credential;
     }
@@ -180,7 +180,8 @@ public class DcqlQueryBuilder {
         return meta;
     }
 
-    private void addClaimsWithOptionalSets(Map<String, Object> credential, List<ClaimSpec> claimSpecs) {
+    private void addClaimsWithOptionalSets(Map<String, Object> credential, List<ClaimSpec> claimSpecs,
+                                             String format, String type) {
         List<Map<String, Object>> claims = new ArrayList<>();
         List<String> requiredClaimIds = new ArrayList<>();
         List<String> allClaimIds = new ArrayList<>();
@@ -189,7 +190,7 @@ public class DcqlQueryBuilder {
 
         for (ClaimSpec claimSpec : claimSpecs) {
             String claimId = "claim" + claimIndex++;
-            claims.add(Map.of("id", claimId, "path", splitClaimPath(claimSpec.path())));
+            claims.add(Map.of("id", claimId, "path", splitClaimPath(claimSpec.path(), format, type)));
             allClaimIds.add(claimId);
             if (claimSpec.optional()) {
                 hasOptionalClaims = true;
@@ -264,19 +265,42 @@ public class DcqlQueryBuilder {
 
     /**
      * Splits a claim path into segments using the PATH_SEPARATOR.
-     * Allows dotted namespaces while supporting explicit path separation.
+     * <p>
+     * For mso_mdoc credentials, paths MUST have exactly two elements per OID4VP 1.0 Section 7.2:
+     * {@code ["namespace", "element_identifier"]}. If only a simple element name is given,
+     * the namespace is derived from the doctype by removing its last segment
+     * (e.g., "org.iso.18013.5.1.mDL" → "org.iso.18013.5.1").
      *
-     * @param path the claim path (e.g., "eu.europa.ec.eudi.pid.1/family_name" or "given_name")
+     * @param path   the claim path (e.g., "eu.europa.ec.eudi.pid.1/family_name" or "given_name")
+     * @param format the credential format (may be null)
+     * @param type   the credential type / doctype (may be null)
      * @return list of path segments
      */
-    private static List<String> splitClaimPath(String path) {
+    private static List<String> splitClaimPath(String path, String format, String type) {
         if (path == null || path.isBlank()) {
             return List.of();
         }
         if (path.contains(PATH_SEPARATOR)) {
             return Arrays.asList(path.split(PATH_SEPARATOR));
         }
+        // For mso_mdoc, claim paths must be [namespace, element_identifier]
+        if (Oid4vpIdentityProviderConfig.FORMAT_MSO_MDOC.equals(format) && type != null) {
+            String namespace = deriveNamespace(type);
+            return List.of(namespace, path);
+        }
         return List.of(path);
+    }
+
+    /**
+     * Derives the default namespace from an mdoc doctype by removing the last dot-separated segment.
+     * Example: "org.iso.18013.5.1.mDL" → "org.iso.18013.5.1"
+     */
+    private static String deriveNamespace(String doctype) {
+        int lastDot = doctype.lastIndexOf('.');
+        if (lastDot > 0) {
+            return doctype.substring(0, lastDot);
+        }
+        return doctype;
     }
 
     /**

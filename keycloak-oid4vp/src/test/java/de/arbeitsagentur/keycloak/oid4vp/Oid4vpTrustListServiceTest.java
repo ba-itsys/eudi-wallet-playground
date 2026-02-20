@@ -21,17 +21,31 @@ import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.JWSHeader;
 import com.nimbusds.jose.crypto.ECDSASigner;
 import com.nimbusds.jose.jwk.ECKey;
+import com.nimbusds.jose.util.Base64;
 import com.nimbusds.jwt.JWTClaimsSet;
 import com.nimbusds.jwt.SignedJWT;
 import org.junit.jupiter.api.Test;
 
 import java.time.Instant;
 import java.util.Date;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
 class Oid4vpTrustListServiceTest {
     private static final ObjectMapper OBJECT_MAPPER = new ObjectMapper();
+
+    // Self-signed mock issuer certificate (base64-DER)
+    private static final String MOCK_ISSUER_CERT_B64 =
+            "MIIBgTCCASegAwIBAgIUBjEaIhGcW5pPX7vCtXbqMyql7ewwCgYIKoZIzj0EAwIw" +
+            "FjEUMBIGA1UEAwwLbW9jay1pc3N1ZXIwHhcNMjUxMjAxMDkzOTI2WhcNMzUxMTI5" +
+            "MDkzOTI2WjAWMRQwEgYDVQQDDAttb2NrLWlzc3VlcjBZMBMGByqGSM49AgEGCCqG" +
+            "SM49AwEHA0IABCSGo02fNJ4ilyIJVsnR90UMvBEhbDxpvIN/X+Rq4y9qjCA35Inb" +
+            "wm5jF0toypoov4aagJGaRkwzmvOy1JMlamKjUzBRMB0GA1UdDgQWBBR2mOx26507" +
+            "8nBXsRCf07e99RBlDDAfBgNVHSMEGDAWgBR2mOx265078nBXsRCf07e99RBlDDAP" +
+            "BgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDc1Evb58VWAGTNgiad" +
+            "stQmCL6YL3ChASt/VLhgA/ogbAIgK5DjLQuY0dVDTaDccEC9s/uaKu+z5u28ZtQj" +
+            "VK65zFU=";
 
     // Trust list JWT (ETSI TS 119 602 format) containing the mock issuer certificate
     private static final String TEST_TRUST_LIST_JWT =
@@ -76,6 +90,7 @@ class Oid4vpTrustListServiceTest {
                 .build();
         JWSHeader header = new JWSHeader.Builder(JWSAlgorithm.ES256)
                 .keyID(issuerKey.getKeyID())
+                .x509CertChain(List.of(new Base64(MOCK_ISSUER_CERT_B64)))
                 .build();
         SignedJWT jwt = new SignedJWT(header, claims);
         jwt.sign(new ECDSASigner(issuerKey));

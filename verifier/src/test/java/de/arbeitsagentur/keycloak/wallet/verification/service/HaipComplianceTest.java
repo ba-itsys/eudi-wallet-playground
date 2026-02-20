@@ -183,8 +183,8 @@ class HaipComplianceTest {
             // Verified by checking vp_formats has ES256 in sd-jwt_alg_values
             ObjectNode meta = buildClientMetadata();
 
-            JsonNode vpFormats = meta.get("vp_formats");
-            assertThat(vpFormats).as("vp_formats must be present").isNotNull();
+            JsonNode vpFormats = meta.get("vp_formats_supported");
+            assertThat(vpFormats).as("vp_formats_supported must be present").isNotNull();
 
             JsonNode sdJwt = vpFormats.get("dc+sd-jwt");
             assertThat(sdJwt).as("dc+sd-jwt format must be present").isNotNull();
@@ -682,12 +682,12 @@ class HaipComplianceTest {
         }
 
         @Test
-        @DisplayName("client_metadata MUST include vp_formats")
+        @DisplayName("client_metadata MUST include vp_formats_supported")
         void mustIncludeVpFormats() throws Exception {
             ObjectNode meta = buildClientMetadata();
 
-            assertThat(meta.has("vp_formats"))
-                    .as("client_metadata must include vp_formats")
+            assertThat(meta.has("vp_formats_supported"))
+                    .as("client_metadata must include vp_formats_supported")
                     .isTrue();
         }
     }
@@ -926,8 +926,8 @@ class HaipComplianceTest {
         // Use ECDH-ES per HAIP Section 5-2.5
         meta.put("authorization_encrypted_response_alg", "ECDH-ES");
         meta.put("authorization_encrypted_response_enc", "A128GCM");
-        // VP formats for OID4VP (not vp_formats_supported)
-        ObjectNode formats = meta.putObject("vp_formats");
+        // VP formats per OID4VP 1.0 Section 11.1
+        ObjectNode formats = meta.putObject("vp_formats_supported");
         ObjectNode sdJwt = objectMapper.createObjectNode();
         sdJwt.putArray("sd-jwt_alg_values").add("ES256");
         sdJwt.putArray("kb-jwt_alg_values").add("ES256");

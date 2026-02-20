@@ -47,7 +47,7 @@ public final class EtsiTrustListParser {
      *
      * @param label    human-readable label (from SchemeOperatorName), may be null
      * @param loTEType the LoTE type URI (e.g. {@code http://uri.etsi.org/19602/LoTEType/EUPIDProvidersList})
-     * @param entities the trusted entities with their public keys
+     * @param entities the trusted entities with their certificates
      */
     public record EtsiTrustList(
             String label,
@@ -58,22 +58,37 @@ public final class EtsiTrustListParser {
         public List<PublicKey> allPublicKeys() {
             List<PublicKey> keys = new ArrayList<>();
             for (TrustedEntity entity : entities) {
-                keys.addAll(entity.publicKeys());
+                for (X509Certificate cert : entity.certificates()) {
+                    keys.add(cert.getPublicKey());
+                }
             }
             return keys;
+        }
+
+        /** Collects all certificates across all entities into a flat list. */
+        public List<X509Certificate> allCertificates() {
+            List<X509Certificate> certs = new ArrayList<>();
+            for (TrustedEntity entity : entities) {
+                certs.addAll(entity.certificates());
+            }
+            return certs;
         }
     }
 
     /**
-     * A single trusted entity with its name and extracted public keys.
+     * A single trusted entity with its name and extracted certificates.
      *
-     * @param name       entity name (from TEName), may be null
-     * @param publicKeys public keys extracted from the entity's service certificates
+     * @param name         entity name (from TEName), may be null
+     * @param certificates X.509 certificates from the entity's service digital identity
      */
     public record TrustedEntity(
             String name,
-            List<PublicKey> publicKeys
+            List<X509Certificate> certificates
     ) {
+        /** Public keys extracted from the entity's certificates. */
+        public List<PublicKey> publicKeys() {
+            return certificates.stream().map(X509Certificate::getPublicKey).toList();
+        }
     }
 
     /**
@@ -113,7 +128,7 @@ public final class EtsiTrustListParser {
             String entityName = extractLocalizedValue(
                     entityNode.path("TrustedEntityInformation").path("TEName"));
 
-            List<PublicKey> publicKeys = new ArrayList<>();
+            List<X509Certificate> certificates = new ArrayList<>();
             for (JsonNode serviceNode : entityNode.path("TrustedEntityServices")) {
                 JsonNode certs = serviceNode
                         .path("ServiceInformation")
@@ -122,15 +137,15 @@ public final class EtsiTrustListParser {
                 for (JsonNode certNode : certs) {
                     String certBase64 = certNode.path("val").asText(null);
                     if (certBase64 != null && !certBase64.isBlank()) {
-                        PublicKey key = parseCertificate(certBase64);
-                        if (key != null) {
-                            publicKeys.add(key);
+                        X509Certificate cert = parseCertificate(certBase64);
+                        if (cert != null) {
+                            certificates.add(cert);
                         }
                     }
                 }
             }
 
-            entities.add(new TrustedEntity(entityName, List.copyOf(publicKeys)));
+            entities.add(new TrustedEntity(entityName, List.copyOf(certificates)));
         }
 
         return new EtsiTrustList(label, loTEType, List.copyOf(entities));
@@ -200,13 +215,11 @@ public final class EtsiTrustListParser {
         return null;
     }
 
-    private static PublicKey parseCertificate(String base64Der) {
+    private static X509Certificate parseCertificate(String base64Der) {
         try {
             byte[] der = Base64.getDecoder().decode(base64Der);
             CertificateFactory factory = CertificateFactory.getInstance("X.509");
-            X509Certificate certificate =
-                    (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(der));
-            return certificate.getPublicKey();
+            return (X509Certificate) factory.generateCertificate(new ByteArrayInputStream(der));
         } catch (Exception e) {
             // Skip unparseable certificates
             return null;

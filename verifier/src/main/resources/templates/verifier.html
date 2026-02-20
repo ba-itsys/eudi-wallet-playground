@@ -499,7 +499,7 @@
           "family_name",
           "given_name_birth",
           "family_name_birth",
-          "birthdate",
+          "birth_date",
           "place_of_birth",
           "birth_country",
           "gender",
@@ -507,11 +507,7 @@
           "age_over_21",
           "age_over_65",
           "nationalities",
-          "address.country",
-          "address.street_address",
-          "address.locality",
-          "address.region",
-          "address.postal_code",
+          "address",
           "document_number",
           "issuing_country",
           "issuing_authority",
@@ -707,7 +703,15 @@
             const claims = (descriptor.claims || [])
               .filter((c) => c.name && c.name.trim())
               .map((claim) => {
-                const segments = claim.originalPath || claim.name.trim().split(".").filter(Boolean);
+                let segments;
+                if (claim.originalPath) {
+                  segments = claim.originalPath;
+                } else {
+                  const name = claim.name.trim();
+                  // Use "/" as path separator (consistent with DCQL spec).
+                  // For mso_mdoc, paths must be exactly [namespace, element_identifier].
+                  segments = name.includes("/") ? name.split("/").filter(Boolean) : [name];
+                }
                 const entry = { path: segments };
                 if (claim.constValue && claim.constValue.trim()) {
                   entry.value = claim.constValue.trim();
@@ -729,7 +733,7 @@
             if (claimSets.length) {
               base.claim_set = claimSets.map((set) => {
                 const names = set.split(",").map((s) => s.trim()).filter(Boolean);
-                const claimsForSet = names.map((name) => ({ path: name.split(".").filter(Boolean) }));
+                const claimsForSet = names.map((name) => ({ path: name.includes("/") ? name.split("/").filter(Boolean) : [name] }));
                 return { claims: claimsForSet };
               });
             }
@@ -738,9 +742,6 @@
           const dcql = { credentials };
           if (Array.isArray(builderState.credentialSets) && builderState.credentialSets.length) {
             dcql.credential_sets = builderState.credentialSets;
-          }
-          if (encryptionEnabled && clientMeta) {
-            dcql.client_metadata = clientMeta;
           }
           return dcql;
         }
