@@ -162,7 +162,7 @@ public class PresentationVerificationService {
         if (!encryptedResponse) {
             return null;
         }
-        var encKey = verifierKeyService.loadOrCreateEncryptionKey().toPublicJWK();
+        var encKey = (JWK) verifierKeyService.loadOrCreateEncryptionKey().toPublicJWK();
         byte[] thumbprint = encKey.computeThumbprint().decode();
         org.slf4j.LoggerFactory.getLogger(PresentationVerificationService.class)
                 .info("[mDoc-verify] Encrypted response mode, jwkThumbprint={}, keyId={}",

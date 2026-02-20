@@ -24,12 +24,17 @@ import com.nimbusds.jose.JWEHeader;
 import com.nimbusds.jose.JWEObject;
 import com.nimbusds.jose.JWSAlgorithm;
 import com.nimbusds.jose.Payload;
+import com.nimbusds.jose.crypto.ECDHDecrypter;
+import com.nimbusds.jose.crypto.ECDHEncrypter;
 import com.nimbusds.jose.crypto.RSADecrypter;
 import com.nimbusds.jose.crypto.RSAEncrypter;
+import com.nimbusds.jose.jwk.Curve;
+import com.nimbusds.jose.jwk.ECKey;
 import com.nimbusds.jose.jwk.JWK;
 import com.nimbusds.jose.jwk.JWKSet;
 import com.nimbusds.jose.jwk.KeyUse;
 import com.nimbusds.jose.jwk.RSAKey;
+import com.nimbusds.jose.jwk.gen.ECKeyGenerator;
 import com.nimbusds.jose.jwk.gen.RSAKeyGenerator;
 import com.nimbusds.jose.util.Base64;
 import com.nimbusds.jose.util.JSONObjectUtils;
@@ -78,7 +83,7 @@ public class VerifierKeyService {
     private final ObjectMapper objectMapper;
     private final String publicHost;
     private volatile RSAKey signingKey;
-    private volatile RSAKey encryptionKey;
+    private volatile ECKey encryptionKey;
 
     public VerifierKeyService(VerifierProperties properties, ObjectMapper objectMapper) {
         this(properties, objectMapper, null);
@@ -98,7 +103,7 @@ public class VerifierKeyService {
         return signingKey;
     }
 
-    public RSAKey loadOrCreateEncryptionKey() {
+    public ECKey loadOrCreateEncryptionKey() {
         ensureKeysLoaded();
         return encryptionKey;
     }
@@ -122,7 +127,7 @@ public class VerifierKeyService {
     public String publicJwksJson() {
         ensureKeysLoaded();
         try {
-            return JSONObjectUtils.toJSONString(new JWKSet(encryptionKey.toPublicJWK()).toJSONObject(false));
+            return JSONObjectUtils.toJSONString(new JWKSet((JWK) encryptionKey.toPublicJWK()).toJSONObject(false));
         } catch (Exception e) {
             throw new IllegalStateException("Failed to serialize JWKS", e);
         }
@@ -130,14 +135,14 @@ public class VerifierKeyService {
 
     public String encrypt(String payload, String alg, String enc) {
         try {
-            RSAKey key = loadOrCreateEncryptionKey();
-            JWEAlgorithm algorithm = alg != null ? JWEAlgorithm.parse(alg) : JWEAlgorithm.RSA_OAEP_256;
-            EncryptionMethod method = enc != null ? EncryptionMethod.parse(enc) : EncryptionMethod.A256GCM;
+            ECKey key = loadOrCreateEncryptionKey();
+            JWEAlgorithm algorithm = alg != null ? JWEAlgorithm.parse(alg) : JWEAlgorithm.ECDH_ES;
+            EncryptionMethod method = enc != null ? EncryptionMethod.parse(enc) : EncryptionMethod.A128GCM;
             JWEObject jwe = new JWEObject(
                     new JWEHeader.Builder(algorithm, method).keyID(key.getKeyID()).build(),
                     new Payload(payload)
             );
-            jwe.encrypt(new RSAEncrypter(key.toRSAPublicKey()));
+            jwe.encrypt(new ECDHEncrypter(key.toECPublicKey()));
             return jwe.serialize();
         } catch (JOSEException e) {
             throw new IllegalStateException("Failed to encrypt vp_token", e);
@@ -147,8 +152,8 @@ public class VerifierKeyService {
     public String decrypt(String jwe) {
         try {
             JWEObject jweObject = JWEObject.parse(jwe);
-            RSAKey key = loadOrCreateEncryptionKey();
-            jweObject.decrypt(new RSADecrypter(key.toRSAPrivateKey()));
+            ECKey key = loadOrCreateEncryptionKey();
+            jweObject.decrypt(new ECDHDecrypter(key.toECPrivateKey()));
             return jweObject.getPayload().toString();
         } catch (Exception e) {
             throw new IllegalStateException("Failed to decrypt vp_token", e);
@@ -201,10 +206,7 @@ public class VerifierKeyService {
                 signingKey = withCertificate(generateSigningKey());
                 rewrite = true;
             } else if (KeyUse.ENCRYPTION.equals(signingKey.getKeyUse())) {
-                // legacy single-key files: reuse for encryption and mint a dedicated signing key
-                if (encryptionKey == null) {
-                    encryptionKey = signingKey;
-                }
+                // legacy single-key files: mint a dedicated signing key
                 signingKey = withCertificate(generateSigningKey());
                 rewrite = true;
             } else if (certificateFromX5c(signingKey).isEmpty()) {
@@ -214,7 +216,6 @@ public class VerifierKeyService {
                 signingKey = withCertificate(signingKey);
                 rewrite = true;
             } else if (publicHost != null && !publicHost.isBlank() && !certificateHasDnsSan(signingKey, publicHost)) {
-                // Ensure the demo signing cert is usable with x509_san_dns on the public host (e.g., CloudFront/ALB).
                 signingKey = withCertificate(signingKey);
                 rewrite = true;
             }
@@ -291,23 +292,19 @@ public class VerifierKeyService {
         String json = Files.readString(keyFile);
         try {
             JWKSet set = JWKSet.parse(json);
-            signingKey = selectKey(set, KeyUse.SIGNATURE, SIGNING_KID);
-            encryptionKey = selectKey(set, KeyUse.ENCRYPTION, ENCRYPTION_KID);
-            if (encryptionKey == null) {
-                encryptionKey = selectKey(set, null, ENCRYPTION_KID);
-            }
+            signingKey = selectRsaKey(set, KeyUse.SIGNATURE, SIGNING_KID);
+            encryptionKey = selectEcKey(set, KeyUse.ENCRYPTION, ENCRYPTION_KID);
             if (signingKey == null) {
-                signingKey = selectKey(set, null, SIGNING_KID);
+                signingKey = selectRsaKey(set, null, SIGNING_KID);
             }
         } catch (ParseException e) {
-            // legacy single-key format
+            // legacy single-key format (RSA only — encryption key will be regenerated as EC)
             RSAKey parsed = parseKey(json);
             signingKey = parsed;
-            encryptionKey = parsed;
         }
     }
 
-    private RSAKey selectKey(JWKSet set, KeyUse use, String preferredKid) {
+    private RSAKey selectRsaKey(JWKSet set, KeyUse use, String preferredKid) {
         return set.getKeys().stream()
                 .filter(jwk -> jwk instanceof RSAKey)
                 .map(jwk -> (RSAKey) jwk)
@@ -318,6 +315,23 @@ public class VerifierKeyService {
                 .orElseGet(() -> set.getKeys().stream()
                         .filter(jwk -> jwk instanceof RSAKey)
                         .map(jwk -> (RSAKey) jwk)
+                        .filter(JWK::isPrivate)
+                        .filter(jwk -> use == null || use.equals(jwk.getKeyUse()))
+                        .findFirst()
+                        .orElse(null));
+    }
+
+    private ECKey selectEcKey(JWKSet set, KeyUse use, String preferredKid) {
+        return set.getKeys().stream()
+                .filter(jwk -> jwk instanceof ECKey)
+                .map(jwk -> (ECKey) jwk)
+                .filter(JWK::isPrivate)
+                .filter(jwk -> use == null || use.equals(jwk.getKeyUse()))
+                .filter(jwk -> preferredKid == null || preferredKid.equals(jwk.getKeyID()) || preferredKid.equalsIgnoreCase(jwk.getKeyID()))
+                .findFirst()
+                .orElseGet(() -> set.getKeys().stream()
+                        .filter(jwk -> jwk instanceof ECKey)
+                        .map(jwk -> (ECKey) jwk)
                         .filter(JWK::isPrivate)
                         .filter(jwk -> use == null || use.equals(jwk.getKeyUse()))
                         .findFirst()
@@ -340,11 +354,11 @@ public class VerifierKeyService {
         }
     }
 
-    private RSAKey generateEncryptionKey() {
+    private ECKey generateEncryptionKey() {
         try {
-            return new RSAKeyGenerator(2048)
+            return new ECKeyGenerator(Curve.P_256)
                     .keyID(ENCRYPTION_KID)
-                    .algorithm(JWEAlgorithm.RSA_OAEP_256)
+                    .algorithm(JWEAlgorithm.ECDH_ES)
                     .keyUse(KeyUse.ENCRYPTION)
                     .generate();
         } catch (Exception e) {
@@ -384,13 +398,11 @@ public class VerifierKeyService {
             if (file.getParent() != null) {
                 Files.createDirectories(file.getParent());
             }
-            List<RSAKey> keys = new ArrayList<>();
+            List<JWK> keys = new ArrayList<>();
             keys.add(signingKey);
-            if (!signingKey.getKeyID().equals(encryptionKey.getKeyID())) {
-                keys.add(encryptionKey);
-            }
+            keys.add(encryptionKey);
             Map<String, Object> payload = new LinkedHashMap<>();
-            payload.put("keys", keys.stream().map(RSAKey::toJSONObject).toList());
+            payload.put("keys", keys.stream().map(JWK::toJSONObject).toList());
             objectMapper.writerWithDefaultPrettyPrinter().writeValue(file.toFile(), payload);
         } catch (Exception e) {
             throw new IllegalStateException("Unable to persist verifier keys", e);
