@@ -55,15 +55,15 @@ class SdJwtParserTest {
     @Test
     void extractsClaimsAndRebuilds() throws Exception {
         CredentialBuildResult built = builder().build("cfg-id", "urn:example:vct", "https://issuer.example/mock",
-                Map.of("address.country", "DE", "given_name", "Alice"), null);
+                Map.of("address", Map.of("street_address", "Heidestraße 17", "country", "DE"), "given_name", "Alice"), null);
 
         Map<String, Object> claims = parser.extractDisclosedClaims(built.encoded());
-        assertThat(claims).containsEntry("address.country", "DE");
+        assertThat(claims).containsKey("address");
         assertThat(parser.extractVct(built.encoded())).isEqualTo("urn:example:vct");
 
-        String rebuilt = parser.rebuildForRequestedClaims(built.encoded(), List.of(), Set.of("address.country"));
+        String rebuilt = parser.rebuildForRequestedClaims(built.encoded(), List.of(), Set.of("address"));
         Map<String, Object> rebuiltClaims = parser.extractDisclosedClaims(rebuilt);
-        assertThat(rebuiltClaims).containsEntry("address.country", "DE");
+        assertThat(rebuiltClaims).containsKey("address");
         assertThat(rebuiltClaims).doesNotContainKey("given_name");
     }
 

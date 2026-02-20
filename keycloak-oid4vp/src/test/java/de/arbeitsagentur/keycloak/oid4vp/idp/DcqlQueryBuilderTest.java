@@ -89,6 +89,13 @@ class DcqlQueryBuilderTest {
         assertThat(cred.get("meta").has("doctype_value")).isTrue();
         assertThat(cred.get("meta").get("doctype_value").asText()).isEqualTo("org.iso.18013.5.1.mDL");
         assertThat(cred.get("meta").has("vct_values")).isFalse();
+
+        // mdoc claim paths must have exactly 2 elements: [namespace, element_identifier]
+        // Namespace derived from doctype: "org.iso.18013.5.1.mDL" → "org.iso.18013.5.1"
+        JsonNode claims = cred.get("claims");
+        assertThat(claims.get(0).get("path").size()).isEqualTo(2);
+        assertThat(claims.get(0).get("path").get(0).asText()).isEqualTo("org.iso.18013.5.1");
+        assertThat(claims.get(0).get("path").get(1).asText()).isEqualTo("driving_privileges");
     }
 
     @Test
@@ -163,6 +170,25 @@ class DcqlQueryBuilderTest {
         assertThat(options.get(0).size()).isEqualTo(2);
         assertThat(options.get(0).get(0).asText()).isEqualTo("cred1");
         assertThat(options.get(0).get(1).asText()).isEqualTo("cred2");
+    }
+
+    @Test
+    void buildMdocWithExplicitNamespacePath() throws Exception {
+        // When namespace is already in the path (via /), it should NOT double-prefix
+        String dcql = new DcqlQueryBuilder(OBJECT_MAPPER)
+                .addCredentialTypeWithPaths(
+                        Oid4vpIdentityProviderConfig.FORMAT_MSO_MDOC,
+                        "org.iso.18013.5.1.mDL",
+                        List.of("org.iso.18013.5.1/driving_privileges")
+                )
+                .build();
+
+        JsonNode node = OBJECT_MAPPER.readTree(dcql);
+        JsonNode claims = node.get("credentials").get(0).get("claims");
+
+        assertThat(claims.get(0).get("path").size()).isEqualTo(2);
+        assertThat(claims.get(0).get("path").get(0).asText()).isEqualTo("org.iso.18013.5.1");
+        assertThat(claims.get(0).get("path").get(1).asText()).isEqualTo("driving_privileges");
     }
 
     @Test

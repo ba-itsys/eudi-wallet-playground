@@ -258,6 +258,13 @@ public final class Oid4vpDcApiRequestObjectService {
         // Use ECDH-ES per HAIP Section 5-2.5
         meta.put("authorization_encrypted_response_alg", JWEAlgorithm.ECDH_ES.getName());
         meta.put("authorization_encrypted_response_enc", EncryptionMethod.A128GCM.getName());
+
+        // vp_formats_supported declares which credential formats the verifier can accept
+        // Required per OID4VP 1.0 Section 11.1
+        var vpFormats = new LinkedHashMap<String, Object>();
+        vpFormats.put("dc+sd-jwt", Map.of("sd-jwt_alg_values", List.of("ES256"), "kb-jwt_alg_values", List.of("ES256")));
+        vpFormats.put("mso_mdoc", Map.of("alg", List.of("ES256")));
+        meta.put("vp_formats_supported", vpFormats);
         return meta;
     }
 }

@@ -22,6 +22,7 @@ import com.nimbusds.jose.crypto.RSASSAVerifier;
 import com.nimbusds.jwt.SignedJWT;
 import de.arbeitsagentur.keycloak.wallet.common.credential.EtsiTrustListParser;
 import de.arbeitsagentur.keycloak.wallet.common.credential.EtsiTrustListParser.EtsiTrustList;
+import de.arbeitsagentur.keycloak.wallet.common.credential.TrustedIssuerResolver;
 import de.arbeitsagentur.keycloak.wallet.verification.config.VerifierProperties;
 import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
@@ -37,6 +38,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.security.PublicKey;
+import java.security.cert.X509Certificate;
 import java.security.interfaces.ECPublicKey;
 import java.security.interfaces.RSAPublicKey;
 import java.time.Duration;
@@ -60,6 +62,7 @@ public class TrustListService implements
     private final VerifierProperties properties;
     private final Map<String, List<TrustedVerifier>> trustLists = new LinkedHashMap<>();
     private final Map<String, List<PublicKey>> trustListKeys = new LinkedHashMap<>();
+    private final Map<String, List<X509Certificate>> trustListCerts = new LinkedHashMap<>();
     private String defaultTrustListId;
     private final Map<String, String> labels = new LinkedHashMap<>();
 
@@ -107,6 +110,7 @@ public class TrustListService implements
 
         trustLists.put(id, verifiers);
         trustListKeys.put(id, List.copyOf(keys));
+        trustListCerts.put(id, List.copyOf(parsed.allCertificates()));
 
         String label = parsed.label();
         labels.put(id, (label == null || label.isBlank()) ? id : label);
@@ -186,18 +190,26 @@ public class TrustListService implements
         if (jwt.getHeader().getAlgorithm() == null) {
             return false;
         }
-        List<TrustedVerifier> candidates = trustLists.getOrDefault(
-                trustListId != null ? trustListId : defaultTrustListId,
-                trustLists.getOrDefault(defaultTrustListId, List.of())
-        );
-        for (TrustedVerifier trusted : candidates) {
-            try {
-                if (trusted.algorithm.equals(jwt.getHeader().getAlgorithm()) && jwt.verify(trusted.verifier)) {
-                    return true;
-                }
-            } catch (Exception ignored) {
+        String effectiveId = trustListId != null ? trustListId : defaultTrustListId;
+
+        // Prefer x5c certificate chain validation when the JWT includes an x5c header
+        List<X509Certificate> anchors = trustListCerts.getOrDefault(
+                effectiveId, trustListCerts.getOrDefault(defaultTrustListId, List.of()));
+        if (TrustedIssuerResolver.verifyWithX5cChain(jwt, anchors)) {
+            LOG.debug("Verified JWT via x5c chain validation against trust list '{}'", effectiveId);
+            return true;
+        }
+
+        // Fall back to direct key matching for JWTs without x5c header
+        List<PublicKey> keys = trustListKeys.getOrDefault(
+                effectiveId, trustListKeys.getOrDefault(defaultTrustListId, List.of()));
+        for (PublicKey key : keys) {
+            if (TrustedIssuerResolver.verifyWithKey(jwt, key)) {
+                LOG.debug("Verified JWT via direct key match against trust list '{}'", effectiveId);
+                return true;
             }
         }
+
         return false;
     }
 
