@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.7.4](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.7.3...v1.7.4) (2026-02-20)
+
+
+### Bug Fixes
+
+* direct_post endpoint must return json ([ab8037f](https://github.com/ba-itsys/eudi-wallet-playground/commit/ab8037fff0aa1eef4deb259cd06cae572686dc77))
+
 ## [1.7.3](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.7.2...v1.7.3) (2026-02-20)
 
 
