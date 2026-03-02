@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.8.2](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.8.1...v1.8.2) (2026-03-02)
+
+
+### Bug Fixes
+
+* fix pid-binding federated identity bug ([cd6f25b](https://github.com/ba-itsys/eudi-wallet-playground/commit/cd6f25b3ecfa5750fd1fa88d083b9647bd513181))
+* remove headed tests / rewrite to use headless mode ([42fb5f2](https://github.com/ba-itsys/eudi-wallet-playground/commit/42fb5f299894a66a801f2ae6b65083627cc32dd9))
+
 ## [1.8.1](https://github.com/ba-itsys/eudi-wallet-playground/compare/v1.8.0...v1.8.1) (2026-02-27)
 
 
