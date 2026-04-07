@@ -1,3 +1,12 @@
+> **This repository is ARCHIVED.**
+>
+> This project was used for experimental purposes. For the latest developments and
+> production-ready components, please refer to the following repositories:
+> - https://github.com/ba-itsys/keycloak-extension-oid4vp
+> - https://github.com/ba-itsys/eudi-wallet-connector
+
+---
+
 # EUDI Wallet Keycloak Demo
 
 > **WARNING: This is a demo/prototype implementation for development and testing purposes only. It is NOT production-ready and should NOT be used in production environments. The code lacks security hardening, proper error handling, and has not undergone security audits. Use at your own risk.**
